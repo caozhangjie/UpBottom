@@ -59,7 +59,7 @@ except ImportError:
     CREDENTIALS_STOCK_CN_NAMES = {}
 
 
-ROOT = "/data/UpBottom"
+ROOT = Path("/data/UpBottom")
 DATA_ROOT = ROOT / "data" / "sp500_2026"
 OUTPUT_ROOT = ROOT / "outputs" / "sp500_2026"
 CHART_ROOT = OUTPUT_ROOT / "charts"

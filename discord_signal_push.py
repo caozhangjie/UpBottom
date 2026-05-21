@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-ROOT = "/data/UpBottom"
+ROOT = Path("/data/UpBottom")
 OUTPUT_ROOT = ROOT / "outputs" / "sp500_2026"
 SIGNALS_PATH = OUTPUT_ROOT / "ad_signals.csv"
 METADATA_PATH = OUTPUT_ROOT / "sp500_metadata.csv"
