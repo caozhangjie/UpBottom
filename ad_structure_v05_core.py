@@ -26,7 +26,7 @@ import csv
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Iterable
 
 
 TIMEFRAMES = ("4h", "1day", "3day", "1week")
@@ -95,7 +95,7 @@ class ADStructure:
     CM_index: int | None = None
     CM_time: str | None = None
     CM_price: float | None = None
-    CM_confirm_rule: str = "close[i] > max(close[i+1:i+4])"
+    CM_confirm_rule: str = "close[i] > max(close[i-5:i]) and close[i] > max(close[i+1:i+6])"
     C_sequence: list[dict] | None = None
     D_index: int | None = None
     D_time: str | None = None
@@ -210,7 +210,7 @@ def detect_ab_signals(symbol: str, timeframe: str, path: Path, rows: list[Row]) 
         ab_macd_fast_max = max(dif[prev_index : curr_index + 1])
         if (
             closes[curr_index] < closes[prev_index] * 0.95
-            and curr_extremum > prev_extremum * 1.05
+            and curr_extremum - prev_extremum > abs(prev_extremum) * 0.05
             and dif[curr_index] < 0
             and ab_macd_fast_max <= 0
         ):
@@ -249,11 +249,21 @@ def detect_ab_signals(symbol: str, timeframe: str, path: Path, rows: list[Row]) 
 
 
 def future_high_confirmed(rows: list[Row], i: int) -> bool:
-    return i + 3 < len(rows) and rows[i].close > max(r.close for r in rows[i + 1 : i + 4])
+    return (
+        i - 5 >= 0
+        and i + 5 < len(rows)
+        and rows[i].close > max(r.close for r in rows[i - 5 : i])
+        and rows[i].close > max(r.close for r in rows[i + 1 : i + 6])
+    )
 
 
 def future_low_confirmed(rows: list[Row], i: int) -> bool:
-    return i + 3 < len(rows) and rows[i].close < min(r.close for r in rows[i + 1 : i + 4])
+    return (
+        i - 5 >= 0
+        and i + 5 < len(rows)
+        and rows[i].close < min(r.close for r in rows[i - 5 : i])
+        and rows[i].close < min(r.close for r in rows[i + 1 : i + 6])
+    )
 
 
 def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
@@ -281,20 +291,33 @@ def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
     st.BM_time = rows[bm_index].datetime
     st.BM_price = rows[bm_index].close
 
-    fail_level = sig.B_price * 0.95
+    b_fail_level = sig.B_price * 0.95
 
-    def mark_failure(i: int) -> ADStructure:
+    def mark_failure(i: int, failure_type: str, c_label: str | None = None) -> ADStructure:
         st.structure_status = "STRUCTURE_FAILED"
-        st.failure_type = "DROP_BELOW_B_95"
+        st.failure_type = failure_type
+        st.failure_C_label = c_label
         st.failure_index = i
         st.failure_time = rows[i].datetime
         st.failure_price = rows[i].close
+        if c_label:
+            st.failure_rule = "close < C_price * 0.95"
+        else:
+            st.failure_rule = "close < B_price * 0.95"
         return st
+
+    def check_failure(i: int, active_c: dict | None = None) -> ADStructure | None:
+        if active_c is not None and rows[i].close < float(active_c["price"]) * 0.95:
+            return mark_failure(i, "C_FAIL", str(active_c["label"]))
+        if rows[i].close < b_fail_level:
+            return mark_failure(i, "B_FAIL")
+        return None
 
     break_index = None
     for i in range(sig.B_index + 1, len(rows)):
-        if rows[i].close < fail_level:
-            return mark_failure(i)
+        failure = check_failure(i)
+        if failure is not None:
+            return failure
         if rows[i].close > st.BM_price:
             break_index = i
             break
@@ -307,8 +330,9 @@ def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
 
     cm_index = None
     for i in range(break_index + 1, len(rows)):
-        if rows[i].close < fail_level:
-            return mark_failure(i)
+        failure = check_failure(i)
+        if failure is not None:
+            return failure
         if future_high_confirmed(rows, i):
             cm_index = i
             break
@@ -319,12 +343,11 @@ def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
     st.CM_time = rows[cm_index].datetime
     st.CM_price = rows[cm_index].close
 
-    mode: Literal["WAIT_C", "WAIT_H"] = "WAIT_C"
     current_c: dict | None = None
-    c_number = 1
     for i in range(cm_index + 1, len(rows)):
-        if rows[i].close < fail_level:
-            return mark_failure(i)
+        failure = check_failure(i, current_c)
+        if failure is not None:
+            return failure
         if rows[i].close > st.CM_price:
             st.D_index = i
             st.D_time = rows[i].datetime
@@ -333,29 +356,20 @@ def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
             st.signal_type = "D_ALERT"
             return st
 
-        if mode == "WAIT_C" and future_low_confirmed(rows, i):
+        if current_c is None and future_low_confirmed(rows, i):
             current_c = {
-                "label": f"C{c_number}",
+                "label": "C",
                 "index": i,
                 "time": rows[i].datetime,
                 "price": rows[i].close,
-                "confirm_rule": "close[i] < min(close[i+1:i+4])",
-                "rebound_high_label": f"C{c_number}H",
+                "confirm_rule": "close[i] < min(close[i-5:i]) and close[i] < min(close[i+1:i+6])",
+                "rebound_high_label": None,
                 "rebound_high_index": None,
                 "rebound_high_time": None,
                 "rebound_high_price": None,
-                "rebound_high_confirm_rule": "close[i] > max(close[i+1:i+4])",
+                "rebound_high_confirm_rule": None,
             }
             st.C_sequence.append(current_c)
-            mode = "WAIT_H"
-            continue
-
-        if mode == "WAIT_H" and current_c is not None and future_high_confirmed(rows, i):
-            current_c["rebound_high_index"] = i
-            current_c["rebound_high_time"] = rows[i].datetime
-            current_c["rebound_high_price"] = rows[i].close
-            c_number += 1
-            mode = "WAIT_C"
 
     st.structure_status = "WAITING_FOR_D"
     return st

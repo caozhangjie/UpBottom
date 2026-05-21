@@ -3,17 +3,18 @@
 Outputs:
 - data/sp500_2026/{1day,4h}/{SYMBOL}_{timeframe}_indicators.csv
 - outputs/sp500_2026/ad_signals.csv
-- outputs/sp500_2026/charts/*.svg
+- outputs/sp500_2026/charts/*.png
 
-Only the Python standard library is used for fetching and drawing. Market data
-can come from Yahoo Finance's chart endpoint or Twelve Data's time_series
-endpoint. Yahoo 4h is built from 1h bars; Twelve Data 4h is fetched directly.
+Market data can come from Yahoo Finance's chart endpoint or Twelve Data's
+time_series endpoint. Yahoo 4h is built from 1h bars; Twelve Data 4h is fetched
+directly.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import math
 import os
@@ -22,17 +23,25 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
+from threading import Lock
 from typing import Iterable
 from zoneinfo import ZoneInfo
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 from ad_structure_v05_core import (
     ABSignal,
     ADStructure,
     Row,
     detect_ab_signals,
+    ema,
     evaluate_ad_structure,
     flatten_record,
     load_rows,
@@ -43,6 +52,11 @@ try:
     from credentials import TWELVE_DATA_API_KEY as CREDENTIALS_TWELVE_DATA_API_KEY
 except ImportError:
     CREDENTIALS_TWELVE_DATA_API_KEY = None
+
+try:
+    from credentials import STOCK_CN_NAMES as CREDENTIALS_STOCK_CN_NAMES
+except ImportError:
+    CREDENTIALS_STOCK_CN_NAMES = {}
 
 
 ROOT = Path(__file__).resolve().parent
@@ -55,6 +69,10 @@ TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
 START_DATE = "2026-01-01"
 TIMEFRAMES = ("1day", "4h")
 EASTERN = ZoneInfo("America/New_York")
+TWELVE_DATA_MIN_REQUEST_INTERVAL = 0.5
+TWELVE_DATA_MAX_ATTEMPTS = 4
+_twelve_data_lock = Lock()
+_last_twelve_data_request_at = 0.0
 
 
 class SP500TableParser(HTMLParser):
@@ -128,18 +146,147 @@ def safe_symbol(symbol: str) -> str:
     return yahoo_symbol(symbol).replace("/", "_")
 
 
-def fetch_sp500_symbols(limit: int | None = None) -> list[str]:
+def fetch_sp500_metadata(limit: int | None = None) -> dict[str, dict[str, str]]:
     html = http_get_text(SP500_URL)
     parser = SP500TableParser()
     parser.feed(html)
     if not parser.rows:
         raise RuntimeError("Could not parse S&P 500 table from Wikipedia.")
     header = parser.rows[0]
-    try:
-        symbol_idx = header.index("Symbol")
-    except ValueError as exc:
-        raise RuntimeError(f"Unexpected S&P 500 table header: {header}") from exc
-    symbols = [row[symbol_idx].strip() for row in parser.rows[1:] if len(row) > symbol_idx and row[symbol_idx]]
+
+    def idx(name: str) -> int | None:
+        try:
+            return header.index(name)
+        except ValueError:
+            return None
+
+    symbol_idx = idx("Symbol")
+    if symbol_idx is None:
+        raise RuntimeError(f"Unexpected S&P 500 table header: {header}")
+    name_idx = idx("Security")
+    sector_idx = idx("GICS Sector")
+    sub_industry_idx = idx("GICS Sub-Industry")
+    rows = parser.rows[1 : limit + 1 if limit else None]
+    metadata: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if len(row) <= symbol_idx or not row[symbol_idx]:
+            continue
+        symbol = row[symbol_idx].strip()
+        metadata[safe_symbol(symbol)] = {
+            "symbol": safe_symbol(symbol),
+            "source_symbol": symbol,
+            "english_name": row[name_idx].strip() if name_idx is not None and len(row) > name_idx else "",
+            "chinese_name": str(CREDENTIALS_STOCK_CN_NAMES.get(symbol) or CREDENTIALS_STOCK_CN_NAMES.get(safe_symbol(symbol)) or ""),
+            "sector": row[sector_idx].strip() if sector_idx is not None and len(row) > sector_idx else "",
+            "sub_industry": row[sub_industry_idx].strip() if sub_industry_idx is not None and len(row) > sub_industry_idx else "",
+        }
+    return metadata
+
+
+def write_metadata_csv(metadata: dict[str, dict[str, str]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fields = ["symbol", "source_symbol", "english_name", "chinese_name", "sector", "sub_industry"]
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for symbol in sorted(metadata):
+            writer.writerow(metadata[symbol])
+
+
+def load_metadata_csv(path: Path, limit: int | None = None) -> dict[str, dict[str, str]]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    if limit:
+        rows = rows[:limit]
+    metadata = {str(row.get("symbol") or ""): row for row in rows if row.get("symbol")}
+    for symbol, chinese_name in CREDENTIALS_STOCK_CN_NAMES.items():
+        safe = safe_symbol(symbol)
+        item = metadata.setdefault(
+            safe,
+            {
+                "symbol": safe,
+                "source_symbol": symbol,
+                "english_name": "",
+                "sector": "",
+                "sub_industry": "",
+            },
+        )
+        item["chinese_name"] = str(chinese_name)
+    return metadata
+
+
+def metadata_from_symbols(symbols: list[str]) -> dict[str, dict[str, str]]:
+    metadata: dict[str, dict[str, str]] = {}
+    for symbol in symbols:
+        text = symbol.strip()
+        if not text or text.startswith("#"):
+            continue
+        safe = safe_symbol(text)
+        metadata[safe] = {
+            "symbol": safe,
+            "source_symbol": text,
+            "english_name": "",
+            "chinese_name": str(CREDENTIALS_STOCK_CN_NAMES.get(text) or CREDENTIALS_STOCK_CN_NAMES.get(safe) or ""),
+            "sector": "",
+            "sub_industry": "",
+        }
+    return metadata
+
+
+def load_symbols_file(path: Path, limit: int | None = None) -> dict[str, dict[str, str]]:
+    text = path.read_text(encoding="utf-8-sig").splitlines()
+    if not text:
+        return {}
+    first = text[0].strip().lower()
+    if "," not in first:
+        symbols = [line.strip().split()[0] for line in text if line.strip() and not line.lstrip().startswith("#")]
+        if limit:
+            symbols = symbols[:limit]
+        return metadata_from_symbols(symbols)
+
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    if limit:
+        rows = rows[:limit]
+    metadata: dict[str, dict[str, str]] = {}
+    for row in rows:
+        raw_symbol = str(row.get("source_symbol") or row.get("symbol") or row.get("ticker") or "").strip()
+        if not raw_symbol:
+            continue
+        safe = safe_symbol(str(row.get("symbol") or raw_symbol).strip())
+        source_symbol = str(row.get("source_symbol") or raw_symbol).strip()
+        metadata[safe] = {
+            "symbol": safe,
+            "source_symbol": source_symbol,
+            "english_name": str(row.get("english_name") or row.get("name") or ""),
+            "chinese_name": str(
+                row.get("chinese_name")
+                or CREDENTIALS_STOCK_CN_NAMES.get(source_symbol)
+                or CREDENTIALS_STOCK_CN_NAMES.get(safe)
+                or ""
+            ),
+            "sector": str(row.get("sector") or row.get("industry") or ""),
+            "sub_industry": str(row.get("sub_industry") or ""),
+        }
+    return metadata
+
+
+def get_sp500_metadata(limit: int | None = None, refresh: bool = False) -> dict[str, dict[str, str]]:
+    cache_path = OUTPUT_ROOT / "sp500_metadata.csv"
+    if not refresh:
+        cached = load_metadata_csv(cache_path, limit)
+        if cached:
+            return cached
+    metadata = fetch_sp500_metadata(limit)
+    write_metadata_csv(metadata, cache_path)
+    return metadata
+
+
+def fetch_sp500_symbols(limit: int | None = None) -> list[str]:
+    metadata = get_sp500_metadata(limit)
+    symbols = [item["source_symbol"] for _, item in sorted(metadata.items())]
     return symbols[:limit] if limit else symbols
 
 
@@ -223,7 +370,31 @@ def fetch_twelve_data_bars(
     if end:
         params["end_date"] = end
     url = TWELVE_DATA_TIME_SERIES_URL + "?" + urllib.parse.urlencode(params)
-    payload = http_get_json(url)
+
+    global _last_twelve_data_request_at
+    payload: dict | None = None
+    for attempt in range(1, TWELVE_DATA_MAX_ATTEMPTS + 1):
+        with _twelve_data_lock:
+            wait = TWELVE_DATA_MIN_REQUEST_INTERVAL - (time.monotonic() - _last_twelve_data_request_at)
+            if wait > 0:
+                time.sleep(wait)
+            _last_twelve_data_request_at = time.monotonic()
+        try:
+            payload = http_get_json(url)
+        except (TimeoutError, urllib.error.URLError, http.client.IncompleteRead, ConnectionError) as exc:
+            if attempt == TWELVE_DATA_MAX_ATTEMPTS:
+                raise
+            time.sleep(min(5 * attempt, 20))
+            continue
+        if payload.get("status") == "error" and "run out of API credits" in str(payload.get("message", "")):
+            if attempt == TWELVE_DATA_MAX_ATTEMPTS:
+                break
+            time.sleep(65)
+            continue
+        break
+
+    if payload is None:
+        raise RuntimeError(f"Twelve Data returned no payload for {symbol} {interval}")
     if payload.get("status") == "error":
         raise RuntimeError(payload.get("message") or payload)
     values = payload.get("values") or []
@@ -279,32 +450,72 @@ def write_rows(path: Path, rows: list[Row]) -> None:
             writer.writerow(asdict(row))
 
 
+def merge_rows(existing: list[Row], incoming: list[Row]) -> list[Row]:
+    merged = {row.datetime: row for row in existing}
+    for row in incoming:
+        merged[row.datetime] = row
+    return [merged[key] for key in sorted(merged)]
+
+
+def incremental_start(rows: list[Row], fallback_start: str, overlap_days: int) -> str:
+    if not rows:
+        return fallback_start
+    try:
+        start_date = datetime.fromisoformat(rows[-1].datetime[:10]) - timedelta(days=max(overlap_days, 0))
+    except ValueError:
+        return rows[-1].datetime[:10]
+    return max(fallback_start, start_date.date().isoformat())
+
+
 def fetch_symbol(
     symbol: str,
     start: str,
     end: str | None,
     provider: str,
     twelve_data_api_key: str | None,
+    overlap_days: int,
 ) -> tuple[str, bool, str]:
     try:
+        file_symbol = safe_symbol(symbol)
+        daily_path = DATA_ROOT / "1day" / f"{file_symbol}_1day_indicators.csv"
+        four_hour_path = DATA_ROOT / "4h" / f"{file_symbol}_4h_indicators.csv"
         if provider == "twelve-data":
             if not twelve_data_api_key:
                 raise RuntimeError("Missing Twelve Data API key. Set TWELVE_DATA_API_KEY or pass --apikey.")
-            daily = fetch_twelve_data_bars(symbol, "1day", start, end, twelve_data_api_key)
-            four_hour = fetch_twelve_data_bars(symbol, "4h", start, end, twelve_data_api_key)
+            existing_daily = load_rows(daily_path, min_date=start) if daily_path.exists() else []
+            existing_four_hour = load_rows(four_hour_path, min_date=start) if four_hour_path.exists() else []
+            daily = merge_rows(
+                existing_daily,
+                fetch_twelve_data_bars(
+                    symbol,
+                    "1day",
+                    incremental_start(existing_daily, start, overlap_days),
+                    end,
+                    twelve_data_api_key,
+                ),
+            )
+            four_hour = merge_rows(
+                existing_four_hour,
+                fetch_twelve_data_bars(
+                    symbol,
+                    "4h",
+                    incremental_start(existing_four_hour, start, overlap_days),
+                    end,
+                    twelve_data_api_key,
+                ),
+            )
         else:
             daily = fetch_yahoo_bars(symbol, "1d", start, end)
             hourly = fetch_yahoo_bars(symbol, "1h", start, end)
             four_hour = resample_1h_to_4h(hourly)
-        file_symbol = safe_symbol(symbol)
-        write_rows(DATA_ROOT / "1day" / f"{file_symbol}_1day_indicators.csv", daily)
-        write_rows(DATA_ROOT / "4h" / f"{file_symbol}_4h_indicators.csv", four_hour)
+        write_rows(daily_path, daily)
+        write_rows(four_hour_path, four_hour)
         return symbol, True, f"1day={len(daily)} 4h={len(four_hour)}"
     except Exception as exc:
         return symbol, False, str(exc)
 
 
-def data_files() -> Iterable[tuple[str, str, Path]]:
+def data_files(symbol_filter: set[str] | None = None) -> Iterable[tuple[str, str, Path]]:
     for timeframe in TIMEFRAMES:
         folder = DATA_ROOT / timeframe
         if not folder.exists():
@@ -312,12 +523,14 @@ def data_files() -> Iterable[tuple[str, str, Path]]:
         suffix = f"_{timeframe}_indicators.csv"
         for path in sorted(folder.glob(f"*{suffix}")):
             symbol = path.name[: -len(suffix)]
+            if symbol_filter is not None and symbol not in symbol_filter:
+                continue
             yield symbol, timeframe, path
 
 
-def scan_saved_data() -> list[tuple[ABSignal, ADStructure, list[Row]]]:
+def scan_saved_data(symbol_filter: set[str] | None = None) -> list[tuple[ABSignal, ADStructure, list[Row]]]:
     out: list[tuple[ABSignal, ADStructure, list[Row]]] = []
-    for symbol, timeframe, path in data_files():
+    for symbol, timeframe, path in data_files(symbol_filter):
         rows = load_rows(path, min_date=START_DATE)
         for sig in detect_ab_signals(symbol, timeframe, path, rows):
             out.append((sig, evaluate_ad_structure(rows, sig), rows))
@@ -354,7 +567,13 @@ def draw_marker(parts: list[str], x: float, y: float, label: str, color: str) ->
     parts.append(svg_text(x + 7, y - 7, label, color, 12))
 
 
-def render_svg(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path) -> None:
+def value_to_y(value: float, lo: float, hi: float, top: float, bottom: float) -> float:
+    if hi <= lo:
+        return (top + bottom) / 2
+    return bottom - ((value - lo) / (hi - lo)) * (bottom - top)
+
+
+def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path) -> None:
     candidates = [
         sig.golden_A_index,
         sig.golden_B_index,
@@ -374,73 +593,146 @@ def render_svg(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
     if not window:
         return
 
-    width, height = 1180, 640
-    left, right, top, bottom = 70, width - 35, 55, height - 80
-    prices = [row.close for row in window]
-    lo, hi = min(prices), max(prices)
-    pad = (hi - lo) * 0.08 or max(hi * 0.02, 1)
-    lo -= pad
-    hi += pad
-    points = [
-        f"{x_for_index(i, start, end, left, right):.1f},{price_to_y(rows[i].close, lo, hi, top, bottom):.1f}"
-        for i in range(start, end + 1)
-    ]
+    closes = [row.close for row in rows]
+    dif = [fast - slow for fast, slow in zip(ema(closes, 12), ema(closes, 26))]
+    dea = ema(dif, 9)
+    hist = [d - e for d, e in zip(dif, dea)]
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-        '<rect width="100%" height="100%" fill="#f8fafc"/>',
-        f'<rect x="{left}" y="{top}" width="{right-left}" height="{bottom-top}" fill="#ffffff" stroke="#cbd5e1"/>',
-        svg_text(24, 28, f"{sig.symbol} {sig.timeframe} bottom divergence | {st.structure_status}", "#0f172a", 18),
-        svg_text(24, 48, f"B={sig.B_time} BM={st.BM_time or '-'} CM={st.CM_time or '-'} D={st.D_time or '-'}", "#475569", 12),
-        f'<polyline points="{" ".join(points)}" fill="none" stroke="#2563eb" stroke-width="2"/>',
-    ]
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    fig, (price_ax, macd_ax) = plt.subplots(
+        2,
+        1,
+        figsize=(15, 9),
+        dpi=140,
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.5, 1.25]},
+    )
+    fig.patch.set_facecolor("#f8fafc")
+    price_ax.set_facecolor("#ffffff")
+    macd_ax.set_facecolor("#ffffff")
 
-    for frac in (0, 0.25, 0.5, 0.75, 1):
-        y = top + (bottom - top) * frac
-        price = hi - (hi - lo) * frac
-        parts.append(f'<line x1="{left}" y1="{y:.1f}" x2="{right}" y2="{y:.1f}" stroke="#e2e8f0"/>')
-        parts.append(svg_text(12, y + 4, f"{price:.2f}", "#64748b", 11))
+    x_values = list(range(start, end + 1))
+    candle_width = 0.56
+    for x, row_idx in zip(x_values, range(start, end + 1)):
+        row = rows[row_idx]
+        up = row.close >= row.open
+        color = "#16a34a" if up else "#dc2626"
+        price_ax.vlines(x, row.low, row.high, color=color, linewidth=0.9, zorder=2)
+        body_low = min(row.open, row.close)
+        body_height = max(abs(row.close - row.open), max(row.close * 0.0008, 0.01))
+        price_ax.add_patch(
+            Rectangle(
+                (x - candle_width / 2, body_low),
+                candle_width,
+                body_height,
+                facecolor=color,
+                edgecolor=color,
+                linewidth=0.8,
+                alpha=0.22 if up else 0.88,
+                zorder=3,
+            )
+        )
 
-    def marker(index: int | None, price: float | None, label: str, color: str) -> None:
+        hist_color = "#16a34a" if hist[row_idx] >= 0 else "#dc2626"
+        macd_ax.bar(x, hist[row_idx], width=candle_width, color=hist_color, alpha=0.32, linewidth=0)
+
+    macd_ax.plot(x_values, dif[start : end + 1], color="#2563eb", linewidth=1.25, label="DIF")
+    macd_ax.plot(x_values, dea[start : end + 1], color="#f97316", linewidth=1.15, label="DEA")
+    macd_ax.axhline(0, color="#94a3b8", linewidth=0.8)
+
+    def mark_price(index: int | None, price: float | None, label: str, color: str, dy: float = 12) -> None:
         if index is None or price is None or index < start or index > end:
             return
-        x = x_for_index(index, start, end, left, right)
-        y = price_to_y(price, lo, hi, top, bottom)
-        draw_marker(parts, x, y, label, color)
-
-    marker(sig.golden_A_index, sig.golden_A_price, "GA", "#64748b")
-    marker(sig.golden_B_index, sig.golden_B_price, "GB", "#64748b")
-    marker(sig.B_index, sig.B_price, "B", "#dc2626")
-    marker(st.BM_index, st.BM_price, "BM", "#ca8a04")
-    marker(st.CM_index, st.CM_price, "CM", "#7c3aed")
-    marker(st.BM_break_index, st.BM_break_price, "BM Break", "#f97316")
-    marker(st.D_index, st.D_price, "D", "#16a34a")
-    marker(st.failure_index, st.failure_price, "FAIL", "#991b1b")
-    for c in st.C_sequence or []:
-        marker(c.get("index"), c.get("price"), c.get("label", "C"), "#0284c7")
-        marker(c.get("rebound_high_index"), c.get("rebound_high_price"), c.get("rebound_high_label", "CH"), "#9333ea")
-
-    for idx, row_idx in enumerate([start, end]):
-        x = x_for_index(row_idx, start, end, left, right)
-        anchor = "start" if idx == 0 else "end"
-        parts.append(
-            f'<text x="{x:.1f}" y="{height-42}" fill="#64748b" font-size="11" font-family="Arial" text-anchor="{anchor}">'
-            f"{escape_xml(rows[row_idx].datetime)}</text>"
+        price_ax.scatter(index, price, s=42, color=color, edgecolor="#111827", linewidth=0.6, zorder=5)
+        price_ax.annotate(
+            label,
+            (index, price),
+            xytext=(0, dy),
+            textcoords="offset points",
+            ha="center",
+            va="bottom" if dy >= 0 else "top",
+            color=color,
+            fontsize=9,
+            fontweight="bold",
+            zorder=6,
         )
-    parts.append("</svg>")
+
+    black = "#111827"
+    purple = "#7c3aed"
+    yellow = "#facc15"
+    blue = "#2563eb"
+    mark_price(sig.golden_A_index, sig.golden_A_price, "GA", black)
+    mark_price(st.BM_index, st.BM_price, "BM", purple)
+    mark_price(sig.B_index, sig.B_price, "B", yellow, dy=-16)
+    mark_price(sig.golden_B_index, sig.golden_B_price, "GB", black)
+    mark_price(st.BM_break_index, st.BM_break_price, "突破BM", blue)
+    mark_price(st.CM_index, st.CM_price, "CM", purple)
+    c_point = (st.C_sequence or [None])[0]
+    if c_point:
+        mark_price(c_point.get("index"), c_point.get("price"), "C", yellow, dy=-16)
+    mark_price(st.D_index, st.D_price, "D", "#16a34a")
+    fail_label = "C fail" if st.failure_type == "C_FAIL" else "B fail" if st.failure_type == "B_FAIL" else "FAIL"
+    mark_price(st.failure_index, st.failure_price, fail_label, "#991b1b", dy=-16)
+
+    if start <= sig.macd_A_index <= end and start <= sig.macd_B_index <= end:
+        macd_ax.plot(
+            [sig.macd_A_index, sig.macd_B_index],
+            [sig.macd_A_value, sig.macd_B_value],
+            color=purple,
+            linewidth=1.4,
+            linestyle="--",
+            zorder=4,
+        )
+        macd_ax.scatter(
+            [sig.macd_A_index, sig.macd_B_index],
+            [sig.macd_A_value, sig.macd_B_value],
+            s=34,
+            color=purple,
+            edgecolor=black,
+            linewidth=0.5,
+            zorder=5,
+        )
+        macd_ax.annotate(
+            "底背离",
+            ((sig.macd_A_index + sig.macd_B_index) / 2, max(sig.macd_A_value, sig.macd_B_value)),
+            xytext=(0, 10),
+            textcoords="offset points",
+            ha="center",
+            color=purple,
+            fontsize=9,
+            fontweight="bold",
+        )
+
+    title = f"{sig.symbol} {sig.timeframe} | {st.structure_status}"
+    subtitle = f"B={sig.B_time}  BM={st.BM_time or '-'}  CM={st.CM_time or '-'}  C={(c_point or {}).get('time', '-')}"
+    price_ax.set_title(f"{title}\n{subtitle}", loc="left", fontsize=12, color="#0f172a")
+    price_ax.grid(True, color="#e2e8f0", linewidth=0.7)
+    macd_ax.grid(True, color="#e2e8f0", linewidth=0.7)
+    macd_ax.legend(loc="upper left", frameon=False, fontsize=8)
+    tick_step = max(1, len(x_values) // 8)
+    ticks = x_values[::tick_step]
+    macd_ax.set_xticks(ticks)
+    macd_ax.set_xticklabels([rows[i].datetime[:10] for i in ticks], rotation=0, fontsize=8)
+    price_ax.set_ylabel("Price")
+    macd_ax.set_ylabel("MACD")
+    price_ax.margins(x=0.01, y=0.08)
+    macd_ax.margins(x=0.01, y=0.18)
+    fig.tight_layout()
     chart_path.parent.mkdir(parents=True, exist_ok=True)
-    chart_path.write_text("\n".join(parts), encoding="utf-8")
+    fig.savefig(chart_path, facecolor=fig.get_facecolor())
+    plt.close(fig)
 
 
-def scan_and_mark() -> list[dict[str, str]]:
+def scan_and_mark(symbol_filter: set[str] | None = None) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     CHART_ROOT.mkdir(parents=True, exist_ok=True)
-    for old_chart in CHART_ROOT.glob("*.svg"):
+    for old_chart in list(CHART_ROOT.glob("*.svg")) + list(CHART_ROOT.glob("*.png")):
         old_chart.unlink()
-    for ordinal, (sig, st, rows) in enumerate(scan_saved_data(), start=1):
-        chart_name = f"{ordinal:05d}_{safe_symbol(sig.symbol)}_{sig.timeframe}_{st.structure_status}.svg"
+    for ordinal, (sig, st, rows) in enumerate(scan_saved_data(symbol_filter), start=1):
+        chart_name = f"{ordinal:05d}_{safe_symbol(sig.symbol)}_{sig.timeframe}_{st.structure_status}.png"
         chart_path = CHART_ROOT / chart_name
-        render_svg(sig, st, rows, chart_path)
+        render_png(sig, st, rows, chart_path)
         record = flatten_record(sig, st)
         record["chart_file"] = str(chart_path.relative_to(ROOT))
         records.append(record)
@@ -449,7 +741,7 @@ def scan_and_mark() -> list[dict[str, str]]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fetch S&P 500 2026 bars and mark A-D bottom divergences.")
+    parser = argparse.ArgumentParser(description="Fetch stock bars and mark A-D bottom divergences.")
     parser.add_argument(
         "--provider",
         choices=["twelve-data", "yahoo"],
@@ -458,9 +750,29 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--apikey", default=None, help="Twelve Data API key. Defaults to TWELVE_DATA_API_KEY.")
     parser.add_argument("--limit", type=int, default=None, help="Limit symbols for a quick smoke test.")
+    parser.add_argument(
+        "--symbols-file",
+        type=Path,
+        default=None,
+        help=(
+            "Optional stock universe file. Plain text files use one symbol per line. "
+            "CSV files may include symbol/source_symbol/english_name/chinese_name/sector/sub_industry."
+        ),
+    )
     parser.add_argument("--workers", type=int, default=8, help="Concurrent download workers.")
     parser.add_argument("--start", default=START_DATE, help="Start date, inclusive, YYYY-MM-DD.")
     parser.add_argument("--end", default=None, help="End date, exclusive, YYYY-MM-DD. Defaults to now.")
+    parser.add_argument(
+        "--overlap-days",
+        type=int,
+        default=10,
+        help="For incremental updates, re-fetch this many calendar days before the last local bar and merge by timestamp.",
+    )
+    parser.add_argument(
+        "--refresh-metadata",
+        action="store_true",
+        help="Refresh S&P 500 names and industry metadata instead of using the local metadata cache.",
+    )
     parser.add_argument("--skip-fetch", action="store_true", help="Use existing local CSV files only.")
     return parser.parse_args()
 
@@ -470,18 +782,40 @@ def main() -> int:
     global START_DATE
     START_DATE = args.start
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    metadata: dict[str, dict[str, str]] | None = None
+    symbol_filter: set[str] | None = None
+
+    if args.symbols_file:
+        metadata = load_symbols_file(args.symbols_file, args.limit)
+        write_metadata_csv(metadata, OUTPUT_ROOT / "stock_metadata.csv")
+        symbol_filter = set(metadata)
 
     if not args.skip_fetch:
         twelve_data_api_key = args.apikey or os.environ.get("TWELVE_DATA_API_KEY") or CREDENTIALS_TWELVE_DATA_API_KEY
         if args.provider == "twelve-data" and not twelve_data_api_key:
             raise SystemExit("Missing Twelve Data API key. Set TWELVE_DATA_API_KEY or pass --apikey.")
-        symbols = fetch_sp500_symbols(args.limit)
-        print(f"provider={args.provider} symbols={len(symbols)} start={args.start} end={args.end or 'now'}")
+        if metadata is None:
+            metadata = get_sp500_metadata(args.limit, refresh=args.refresh_metadata)
+        symbols = [item["source_symbol"] for _, item in sorted(metadata.items())]
+        if not symbols:
+            raise SystemExit("No symbols found. Check --symbols-file or metadata cache.")
+        print(
+            f"provider={args.provider} symbols={len(symbols)} start={args.start} "
+            f"end={args.end or 'now'} overlap_days={args.overlap_days}"
+        )
         ok_count = 0
         failures: list[tuple[str, str]] = []
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
-                executor.submit(fetch_symbol, symbol, args.start, args.end, args.provider, twelve_data_api_key): symbol
+                executor.submit(
+                    fetch_symbol,
+                    symbol,
+                    args.start,
+                    args.end,
+                    args.provider,
+                    twelve_data_api_key,
+                    args.overlap_days,
+                ): symbol
                 for symbol in symbols
             }
             for future in as_completed(futures):
@@ -498,7 +832,7 @@ def main() -> int:
             writer.writerows(failures)
         print(f"downloaded={ok_count} failed={len(failures)}")
 
-    records = scan_and_mark()
+    records = scan_and_mark(symbol_filter)
     status_counts: dict[str, int] = {}
     for record in records:
         status = record.get("structure_status", "")
