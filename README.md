@@ -278,6 +278,12 @@ Force resend:
 python discord_signal_push.py --timeframe 4h --force
 ```
 
+Clear the Discord dedupe cache without sending alerts:
+
+```bash
+python discord_signal_push.py --clear-cache
+```
+
 ## Full Automation
 
 Recommended crontab uses New York time so market close timing automatically follows daylight saving time.

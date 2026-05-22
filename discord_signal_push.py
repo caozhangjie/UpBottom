@@ -169,12 +169,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--webhook-url", default=None)
     parser.add_argument("--refresh-metadata", action="store_true", help="Refresh S&P 500 names and industry metadata.")
     parser.add_argument("--force", action="store_true", help="Push alerts even if they were already sent.")
+    parser.add_argument("--clear-cache", action="store_true", help="Clear the Discord dedupe cache and exit.")
     parser.add_argument("--dry-run", action="store_true", help="Print alerts without sending or updating cache.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.clear_cache:
+        save_cache(args.cache, {"sent": {}})
+        print(f"cache_cleared={args.cache}")
+        return 0
+
     webhook_url = args.webhook_url or os.environ.get("DISCORD_WEBHOOK_URL") or CREDENTIALS_DISCORD_WEBHOOK_URL
     if args.refresh_metadata or not args.metadata.exists():
         try:
