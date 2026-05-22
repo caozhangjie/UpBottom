@@ -122,7 +122,7 @@ def format_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> st
             f"CM：{row.get('CM_time') or '-'} @ {row.get('CM_price') or '-'}",
             f"C：{c_text}",
             f"状态：{row.get('structure_status', '-')}",
-            f"图表：{row.get('chart_file', '-')}",
+            f"图表：{row.get('chart_file') or '-'}",
         ]
     )
 
@@ -176,9 +176,9 @@ def main() -> int:
     webhook_url = args.webhook_url or os.environ.get("DISCORD_WEBHOOK_URL") or CREDENTIALS_DISCORD_WEBHOOK_URL
     if args.refresh_metadata or not args.metadata.exists():
         try:
-            from fetch_sp500_2026_and_mark import fetch_sp500_metadata, write_metadata_csv
+            from fetch_sp500_2026_and_mark import get_sp500_metadata, write_metadata_csv
 
-            write_metadata_csv(fetch_sp500_metadata(), args.metadata)
+            write_metadata_csv(get_sp500_metadata(refresh=True), args.metadata)
         except Exception as exc:
             print(f"metadata_refresh_failed={exc}")
     rows = load_csv(args.signals)

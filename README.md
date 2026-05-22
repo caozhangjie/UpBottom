@@ -3,7 +3,7 @@
 UpBottom is a research tool for finding bottom-divergence reversal structures in stock OHLCV data. It is not a trading bot, backtest engine, or investment advice system.
 
 ```text
-download OHLCV data -> merge/dedupe local cache -> scan bottom divergence -> export CSV/PNG -> push Discord alerts
+download OHLCV data -> merge/dedupe local cache -> scan bottom divergence -> export CSV -> optional chart validation -> push Discord alerts
 ```
 
 ## Model
@@ -33,7 +33,7 @@ All structure comparisons use `close`.
 
 ## Files
 
-- `fetch_sp500_2026_and_mark.py`: main data/update/scan/chart pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists.
+- `fetch_sp500_2026_and_mark.py`: main data/update/scan pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists. PNG charts are optional manual validation output.
 - `ad_structure_v05_core.py`: scanner and structure evaluator.
 - `discord_signal_push.py`: pushes BM-break alerts to Discord with local dedupe cache.
 - `credentials.example.py`: local credential template.
@@ -178,6 +178,24 @@ Fast local rescan without downloading:
 python fetch_sp500_2026_and_mark.py --skip-fetch
 ```
 
+## Chart Validation
+
+Batch/cloud runs do not render charts by default. This keeps the scheduled pipeline focused on data, scan results, and alerts.
+
+When you want to manually inspect detected structures, run a local rescan with chart rendering enabled:
+
+```bash
+python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
+```
+
+Charts are written to:
+
+```text
+outputs/stocks_2025_10/charts/
+```
+
+The scan CSV always writes `outputs/stocks_2025_10/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
+
 ## Discord Alerts
 
 After the scan, push alerts:
@@ -282,7 +300,7 @@ outputs/stocks_2025_10/ad_signals.csv
 outputs/stocks_2025_10/sp500_metadata.csv
 outputs/stocks_2025_10/stock_metadata.csv
 outputs/stocks_2025_10/discord_push_cache.json
-outputs/stocks_2025_10/charts/
+outputs/stocks_2025_10/charts/    # only when --render-charts is used
 ```
 
 ## Useful Commands
@@ -303,4 +321,10 @@ Use Yahoo fallback:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --provider yahoo
+```
+
+Render charts for manual validation:
+
+```bash
+python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
 ```

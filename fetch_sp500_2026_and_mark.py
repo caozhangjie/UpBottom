@@ -33,12 +33,6 @@ from threading import Lock
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-
 from ad_structure_v05_core import (
     ABSignal,
     ADStructure,
@@ -624,6 +618,12 @@ def value_to_y(value: float, lo: float, hi: float, top: float, bottom: float) ->
 
 
 def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
     candidates = [
         sig.golden_A_index,
         sig.golden_B_index,
@@ -774,17 +774,21 @@ def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
     plt.close(fig)
 
 
-def scan_and_mark(symbol_filter: set[str] | None = None) -> list[dict[str, str]]:
+def scan_and_mark(symbol_filter: set[str] | None = None, render_charts: bool = False) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
-    CHART_ROOT.mkdir(parents=True, exist_ok=True)
-    for old_chart in list(CHART_ROOT.glob("*.svg")) + list(CHART_ROOT.glob("*.png")):
-        old_chart.unlink()
+    if render_charts:
+        CHART_ROOT.mkdir(parents=True, exist_ok=True)
+        for old_chart in list(CHART_ROOT.glob("*.svg")) + list(CHART_ROOT.glob("*.png")):
+            old_chart.unlink()
     for ordinal, (sig, st, rows) in enumerate(scan_saved_data(symbol_filter), start=1):
-        chart_name = f"{ordinal:05d}_{safe_symbol(sig.symbol)}_{sig.timeframe}_{st.structure_status}.png"
-        chart_path = CHART_ROOT / chart_name
-        render_png(sig, st, rows, chart_path)
         record = flatten_record(sig, st)
-        record["chart_file"] = str(chart_path.relative_to(ROOT))
+        if render_charts:
+            chart_name = f"{ordinal:05d}_{safe_symbol(sig.symbol)}_{sig.timeframe}_{st.structure_status}.png"
+            chart_path = CHART_ROOT / chart_name
+            render_png(sig, st, rows, chart_path)
+            record["chart_file"] = str(chart_path.relative_to(ROOT))
+        else:
+            record["chart_file"] = ""
         records.append(record)
     write_csv(records, OUTPUT_ROOT / "ad_signals.csv")
     return records
@@ -841,6 +845,11 @@ def parse_args() -> argparse.Namespace:
         help="Refresh S&P 500 names and industry metadata instead of using the local metadata cache.",
     )
     parser.add_argument("--skip-fetch", action="store_true", help="Use existing local CSV files only.")
+    parser.add_argument(
+        "--render-charts",
+        action="store_true",
+        help="Render PNG charts for manual validation. Disabled by default for cloud/batch runs.",
+    )
     return parser.parse_args()
 
 
@@ -906,12 +915,13 @@ def main() -> int:
             writer.writerows(failures)
         print(f"downloaded={ok_count} failed={len(failures)}")
 
-    records = scan_and_mark(symbol_filter)
+    records = scan_and_mark(symbol_filter, render_charts=args.render_charts)
     status_counts: dict[str, int] = {}
     for record in records:
         status = record.get("structure_status", "")
         status_counts[status] = status_counts.get(status, 0) + 1
-    print(f"signals={len(records)} index={OUTPUT_ROOT / 'ad_signals.csv'} charts={CHART_ROOT}")
+    chart_status = str(CHART_ROOT) if args.render_charts else "disabled"
+    print(f"signals={len(records)} index={OUTPUT_ROOT / 'ad_signals.csv'} charts={chart_status}")
     for status, count in sorted(status_counts.items()):
         print(f"{status or 'UNKNOWN'}={count}")
     return 0
