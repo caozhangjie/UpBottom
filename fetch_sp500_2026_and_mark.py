@@ -648,7 +648,7 @@ def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
     dea = ema(dif, 9)
     hist = [d - e for d, e in zip(dif, dea)]
 
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+    plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
     fig, (price_ax, macd_ax) = plt.subplots(
         2,
@@ -716,7 +716,7 @@ def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
     mark_price(st.BM_index, st.BM_price, "BM", purple)
     mark_price(sig.B_index, sig.B_price, "B", yellow, dy=-16)
     mark_price(sig.golden_B_index, sig.golden_B_price, "GB", black)
-    mark_price(st.BM_break_index, st.BM_break_price, "突破BM", blue)
+    mark_price(st.BM_break_index, st.BM_break_price, "BM break", blue)
     mark_price(st.CM_index, st.CM_price, "CM", purple)
     c_point = (st.C_sequence or [None])[0]
     if c_point:
@@ -744,7 +744,7 @@ def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
             zorder=5,
         )
         macd_ax.annotate(
-            "底背离",
+            "Bull div",
             ((sig.macd_A_index + sig.macd_B_index) / 2, max(sig.macd_A_value, sig.macd_B_value)),
             xytext=(0, 10),
             textcoords="offset points",
