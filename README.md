@@ -385,8 +385,8 @@ python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
 Segment one symbol for strategy research:
 
 ```bash
-python segment_market_structure.py --symbol MU --timeframe 1day --min-date 2025-01-01 --lookback 8 --trend-atr 1.8 --down-trend-atr 2.6
-python segment_market_structure.py --symbol MU --timeframe 4h --min-date 2025-01-01 --lookback 8 --trend-atr 1.8 --down-trend-atr 2.6
+python segment_market_structure.py --symbol MU --timeframe 1day --min-date 2025-01-01 --lookback 8 --trend-atr 1.8
+python segment_market_structure.py --symbol MU --timeframe 4h --min-date 2025-01-01 --lookback 8 --trend-atr 1.8
 ```
 
-The segmentation tool combines price structure and MACD momentum. A `连续上涨` leg needs enough ATR movement/efficiency plus DIF/DEA staying in the positive half-axis for enough of the segment; a `连续下跌` leg uses stricter price rules, negative-half-axis MACD confirmation, enough falling closes, a close near the window low, and a break/near-break of the recent close floor. This keeps many ordinary pullbacks inside `震荡` for manual strategy review. Tune the MACD filter with `--macd-min-atr` and `--macd-side-share`.
+The segmentation tool combines symmetric price structure and MACD momentum. `连续上涨` and `连续下跌` use mirrored rules: enough ATR movement and efficiency, enough same-direction closes, close near the window extreme, a break/near-break of the recent close ceiling/floor, and DIF/DEA staying in the matching MACD half-axis for enough of the segment. Tune the MACD filter with `--macd-min-atr` and `--macd-side-share`.
