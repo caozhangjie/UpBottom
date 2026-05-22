@@ -95,7 +95,7 @@ Default universe is S&P 500. No extra argument is needed. In other words, `--uni
 python fetch_sp500_2026_and_mark.py
 ```
 
-The default S&P 500 metadata source is Wikipedia. On some cloud machines, Wikipedia may return HTTP 403/rate-limit errors. If that happens, either reuse the local metadata cache, provide `--symbols-file`, or switch to an ETF-composition universe.
+The default S&P 500 universe does not scrape external constituent webpages. It first reuses the local metadata cache. If the cache is missing or `--refresh-metadata` is passed, it builds the universe from a Twelve Data ETF composition proxy. The default proxy ETF is `SPY`, and you can change it with `--universe-etf`.
 
 You can provide a custom list:
 
@@ -121,15 +121,15 @@ BRK-B,BRK.B,Berkshire Hathaway,伯克希尔,Financials,Multi-Sector Holdings
 
 `source_symbol` is the provider symbol used for downloading. `symbol` is the safe local ID used in filenames and Discord alerts. If `symbol` is omitted, the script derives one automatically.
 
-Only use `--universe-source etf-composition` when you intentionally want an ETF-holdings universe instead of the default S&P 500 universe:
+Only use `--universe-source etf-composition` when you intentionally want an ETF-holdings universe instead of the default S&P 500-compatible universe:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --universe-source etf-composition --universe-etf SPY
 ```
 
-This calls Twelve Data's `/etfs/world/composition` endpoint and uses returned ETF holdings as the stock list. This is useful for SPY/VOO/IVV-style approximations or future ETF-based universes, but it is not the same as an official index constituent list. ETF holdings can include cash/other assets, may be limited to reported top holdings, and can differ from the index because of reporting cadence or fund construction.
+Both default `sp500` cache refreshes and explicit `etf-composition` universes call Twelve Data's `/etfs/world/composition` endpoint and use returned ETF holdings as the stock list. This is useful for SPY/VOO/IVV-style approximations or future ETF-based universes, but it is not the same as an official index constituent list. ETF holdings can include cash/other assets, may be limited to reported top holdings, and can differ from the index because of reporting cadence or fund construction.
 
-For S&P 500, metadata is cached in:
+For the default S&P 500-compatible universe, metadata is cached in:
 
 ```text
 outputs/stocks_2025_10/sp500_metadata.csv
@@ -165,13 +165,19 @@ python fetch_sp500_2026_and_mark.py --overlap-days 10
 
 This fills recent gaps and refreshes revised latest bars without re-downloading the full history every run.
 
-For the initial default S&P 500 cache from `2025-10-01`, run once without `--skip-fetch`:
+For the initial default S&P 500-compatible cache from `2025-10-01`, run once without `--skip-fetch`:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2
 ```
 
 This command uses S&P 500 because `--universe-source sp500` is the default.
+
+If you want to use VOO or IVV as the default S&P 500 proxy instead of SPY, pass:
+
+```bash
+python fetch_sp500_2026_and_mark.py --universe-etf VOO --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2
+```
 
 For a custom universe:
 
@@ -259,7 +265,7 @@ UPBOTTOM_DATASET=stocks_2025_10
 # Daily bar: run after market close and after the 4h close job.
 40 16 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 1day >> logs/upbottom_1day_close.log 2>&1
 
-# Weekly metadata refresh. This updates S&P 500 English names and GICS industry data.
+# Weekly metadata refresh. This refreshes the default S&P 500-compatible universe from the proxy ETF composition.
 15 10 * * 6 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> logs/upbottom_metadata.log 2>&1
 ```
 
@@ -285,7 +291,7 @@ Metadata is used only for alert display:
 - sector
 - sub-industry
 
-S&P 500 metadata changes slowly, so weekly refresh is enough. Custom-list metadata comes from your `symbols.csv`; update that file whenever your generated universe changes. ETF-composition metadata is cached per ETF symbol, for example `etf_SPY_metadata.csv`; refresh it when you want to pick up new reported holdings.
+The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after it is generated from the proxy ETF composition. Weekly refresh is usually enough. Custom-list metadata comes from your `symbols.csv`; update that file whenever your generated universe changes. Explicit ETF-composition metadata is cached per ETF symbol, for example `etf_SPY_metadata.csv`; refresh it when you want to pick up new reported holdings.
 
 ## Outputs
 

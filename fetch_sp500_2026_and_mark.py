@@ -24,7 +24,6 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime, time as dtime, timedelta, timezone
-from html.parser import HTMLParser
 from pathlib import Path
 from threading import Lock
 from typing import Iterable
@@ -64,10 +63,10 @@ DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks_2025_10")
 DATA_ROOT = ROOT / "data" / DATASET_NAME
 OUTPUT_ROOT = ROOT / "outputs" / DATASET_NAME
 CHART_ROOT = OUTPUT_ROOT / "charts"
-SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
 TWELVE_DATA_ETF_COMPOSITION_URL = "https://api.twelvedata.com/etfs/world/composition"
+DEFAULT_SP500_PROXY_ETF = "SPY"
 START_DATE = "2025-10-01"
 TIMEFRAMES = ("1day", "4h")
 EASTERN = ZoneInfo("America/New_York")
@@ -75,47 +74,6 @@ TWELVE_DATA_MIN_REQUEST_INTERVAL = 0.5
 TWELVE_DATA_MAX_ATTEMPTS = 4
 _twelve_data_lock = Lock()
 _last_twelve_data_request_at = 0.0
-
-
-class SP500TableParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.in_table = False
-        self.table_done = False
-        self.in_cell = False
-        self.current_cell: list[str] = []
-        self.current_row: list[str] = []
-        self.rows: list[list[str]] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attrs_dict = dict(attrs)
-        if (
-            tag == "table"
-            and "wikitable" in (attrs_dict.get("class") or "")
-            and not self.in_table
-            and not self.table_done
-        ):
-            self.in_table = True
-        if self.in_table and tag == "tr":
-            self.current_row = []
-        if self.in_table and tag in {"td", "th"}:
-            self.in_cell = True
-            self.current_cell = []
-
-    def handle_data(self, data: str) -> None:
-        if self.in_cell:
-            self.current_cell.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if self.in_table and tag in {"td", "th"}:
-            text = " ".join("".join(self.current_cell).split())
-            self.current_row.append(text)
-            self.in_cell = False
-        if self.in_table and tag == "tr" and self.current_row:
-            self.rows.append(self.current_row)
-        if self.in_table and tag == "table":
-            self.in_table = False
-            self.table_done = True
 
 
 def http_get_json(url: str, timeout: int = 30) -> dict:
@@ -130,12 +88,6 @@ def http_get_json(url: str, timeout: int = 30) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def http_get_text(url: str, timeout: int = 30) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read().decode("utf-8", errors="replace")
-
-
 def yahoo_symbol(symbol: str) -> str:
     return symbol.replace(".", "-")
 
@@ -146,43 +98,6 @@ def twelve_data_symbol(symbol: str) -> str:
 
 def safe_symbol(symbol: str) -> str:
     return yahoo_symbol(symbol).replace("/", "_")
-
-
-def fetch_sp500_metadata(limit: int | None = None) -> dict[str, dict[str, str]]:
-    html = http_get_text(SP500_URL)
-    parser = SP500TableParser()
-    parser.feed(html)
-    if not parser.rows:
-        raise RuntimeError("Could not parse S&P 500 table from Wikipedia.")
-    header = parser.rows[0]
-
-    def idx(name: str) -> int | None:
-        try:
-            return header.index(name)
-        except ValueError:
-            return None
-
-    symbol_idx = idx("Symbol")
-    if symbol_idx is None:
-        raise RuntimeError(f"Unexpected S&P 500 table header: {header}")
-    name_idx = idx("Security")
-    sector_idx = idx("GICS Sector")
-    sub_industry_idx = idx("GICS Sub-Industry")
-    rows = parser.rows[1 : limit + 1 if limit else None]
-    metadata: dict[str, dict[str, str]] = {}
-    for row in rows:
-        if len(row) <= symbol_idx or not row[symbol_idx]:
-            continue
-        symbol = row[symbol_idx].strip()
-        metadata[safe_symbol(symbol)] = {
-            "symbol": safe_symbol(symbol),
-            "source_symbol": symbol,
-            "english_name": row[name_idx].strip() if name_idx is not None and len(row) > name_idx else "",
-            "chinese_name": str(CREDENTIALS_STOCK_CN_NAMES.get(symbol) or CREDENTIALS_STOCK_CN_NAMES.get(safe_symbol(symbol)) or ""),
-            "sector": row[sector_idx].strip() if sector_idx is not None and len(row) > sector_idx else "",
-            "sub_industry": row[sub_industry_idx].strip() if sub_industry_idx is not None and len(row) > sub_industry_idx else "",
-        }
-    return metadata
 
 
 def write_metadata_csv(metadata: dict[str, dict[str, str]], output_path: Path) -> None:
@@ -340,19 +255,30 @@ def get_etf_composition_metadata(
     return metadata
 
 
-def get_sp500_metadata(limit: int | None = None, refresh: bool = False) -> dict[str, dict[str, str]]:
+def get_sp500_metadata(
+    api_key: str | None,
+    limit: int | None = None,
+    refresh: bool = False,
+    proxy_etf: str = DEFAULT_SP500_PROXY_ETF,
+) -> dict[str, dict[str, str]]:
     cache_path = OUTPUT_ROOT / "sp500_metadata.csv"
     if not refresh:
         cached = load_metadata_csv(cache_path, limit)
         if cached:
             return cached
-    metadata = fetch_sp500_metadata(limit)
+    if not api_key:
+        raise RuntimeError(
+            "Missing Twelve Data API key for default S&P 500 universe. "
+            "Set TWELVE_DATA_API_KEY, pass --apikey, or provide --symbols-file."
+        )
+    metadata = fetch_etf_composition_metadata(proxy_etf, api_key, limit)
     write_metadata_csv(metadata, cache_path)
     return metadata
 
 
 def fetch_sp500_symbols(limit: int | None = None) -> list[str]:
-    metadata = get_sp500_metadata(limit)
+    api_key = os.environ.get("TWELVE_DATA_API_KEY") or CREDENTIALS_TWELVE_DATA_API_KEY
+    metadata = get_sp500_metadata(api_key, limit)
     symbols = [item["source_symbol"] for _, item in sorted(metadata.items())]
     return symbols[:limit] if limit else symbols
 
@@ -823,13 +749,17 @@ def parse_args() -> argparse.Namespace:
         default="sp500",
         help=(
             "Stock universe source when --symbols-file is not provided. "
-            "sp500 uses Wikipedia metadata; etf-composition uses Twelve Data ETF top holdings."
+            "sp500 uses local cache or a Twelve Data ETF composition proxy; "
+            "etf-composition uses Twelve Data ETF top holdings directly."
         ),
     )
     parser.add_argument(
         "--universe-etf",
         default="SPY",
-        help="ETF symbol used when --universe-source etf-composition is selected.",
+        help=(
+            "ETF symbol used by --universe-source etf-composition, and as the proxy ETF "
+            "when default sp500 metadata must be refreshed or created."
+        ),
     )
     parser.add_argument(
         "--symbols-file",
@@ -888,7 +818,15 @@ def main() -> int:
         if args.provider == "twelve-data" and not twelve_data_api_key:
             raise SystemExit("Missing Twelve Data API key. Set TWELVE_DATA_API_KEY or pass --apikey.")
         if metadata is None:
-            metadata = get_sp500_metadata(args.limit, refresh=args.refresh_metadata)
+            try:
+                metadata = get_sp500_metadata(
+                    twelve_data_api_key,
+                    args.limit,
+                    refresh=args.refresh_metadata,
+                    proxy_etf=args.universe_etf,
+                )
+            except Exception as exc:
+                raise SystemExit(str(exc)) from exc
         symbols = [item["source_symbol"] for _, item in sorted(metadata.items())]
         if not symbols:
             raise SystemExit("No symbols found. Check --symbols-file or metadata cache.")
