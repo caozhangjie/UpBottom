@@ -1,80 +1,61 @@
 # UpBottom
 
-UpBottom is a local research tool for finding bottom-divergence reversal structures in S&P 500 price data. It is not a trading bot, backtest engine, or investment advice system. The workflow is:
+UpBottom is a research tool for finding bottom-divergence reversal structures in stock OHLCV data. It is not a trading bot, backtest engine, or investment advice system.
 
 ```text
-download OHLCV data -> detect bottom divergence -> evaluate B/BM/CM/C/D structure -> export CSV and PNG review charts
+download OHLCV data -> merge/dedupe local cache -> scan bottom divergence -> export CSV/PNG -> push Discord alerts
 ```
 
-## Current Model
+## Model
 
 The core scanner lives in `ad_structure_v05_core.py`.
 
 The bottom-divergence definition uses MACD DIF:
 
 - For every golden cross, compute the minimum DIF value between that golden cross and the previous death cross.
-- A bottom divergence exists when the current golden-cross close is lower than the previous golden-cross close, while the current golden-cross DIF minimum is higher than the previous one.
-- The current implementation keeps these confirmed filters: price must be at least 5% lower, the current DIF minimum must exceed the previous DIF minimum by at least 5% of the previous DIF minimum's absolute value, current golden-cross DIF must be below zero, and DIF must not cross above zero between the two golden crosses.
+- A bottom divergence exists when the second golden-cross close is lower than the first golden-cross close, while the second DIF minimum is higher than the first DIF minimum.
+- Filters: price must be at least 5% lower, the current DIF minimum must exceed the previous DIF minimum by at least 5% of the previous DIF minimum's absolute value, current golden-cross DIF must be below zero, and DIF must not cross above zero between the two golden crosses.
 
-The structure points are:
+Structure points:
 
-- `golden_A` / `golden_B`: the two golden-cross bars used for the divergence comparison.
-- `B`: the lowest close between the two golden-cross bars.
-- `BM`: the highest close between the two golden-cross bars.
-- `BM Break`: the first close after `B` that breaks above `BM_price`.
-- `CM`: the first close after `BM Break` that is higher than the previous 5 closes and next 5 closes.
-- `C`: the first close after `CM` that is lower than the previous 5 closes and next 5 closes.
-- `D`: the first close above `CM_price` before structure failure.
-- Structure failure: after `B`, a close below `B_price * 0.95` is `B_FAIL`; after `C`, a close below `C_price * 0.95` is `C_FAIL`.
+- `GA`: first golden cross.
+- `GB`: second golden cross.
+- `B`: lowest close between `GA` and `GB`.
+- `BM`: highest close between `GA` and `GB`.
+- `突破BM`: first close after `B` that breaks above `BM_price`.
+- `CM`: first close after `突破BM` that is higher than the previous 5 closes and next 5 closes.
+- `C`: first close after `CM` that is lower than the previous 5 closes and next 5 closes.
+- `D`: first close above `CM_price` before structure failure.
+- `B_FAIL`: after `B`, close falls below `B_price * 0.95`.
+- `C_FAIL`: after `C`, close falls below `C_price * 0.95`.
 
-All structure comparisons use `close`, not `high` or `low`.
+All structure comparisons use `close`.
 
 ## Files
 
-- `ad_structure_v05_core.py`: pure scanner and structure evaluator.
-- `fetch_sp500_2026_and_mark.py`: incrementally downloads stock data, scans signals, and writes PNG review charts.
-- `discord_signal_push.py`: pushes BM-break bottom-divergence alerts to Discord with a local dedupe cache.
-- `credentials.example.py`: template for local Twelve Data and Discord credentials.
-- `requirements.txt`: Python dependencies for local or cloud deployment.
+- `fetch_sp500_2026_and_mark.py`: main data/update/scan/chart pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists.
+- `ad_structure_v05_core.py`: scanner and structure evaluator.
+- `discord_signal_push.py`: pushes BM-break alerts to Discord with local dedupe cache.
+- `credentials.example.py`: local credential template.
+- `requirements.txt`: cloud/local Python dependencies.
+- `symbols.example.csv`: example custom stock universe file.
 
-Local-only files are intentionally ignored:
+Ignored local/runtime files:
 
 - `credentials.py`
 - `data/`
 - `outputs/`
 
-## Data Source
-
-The default data provider is Twelve Data. The script reads the API key in this order:
-
-1. `--apikey`
-2. `TWELVE_DATA_API_KEY`
-3. local `credentials.py`
-
-Create `credentials.py` locally:
-
-```python
-TWELVE_DATA_API_KEY = "your_api_key_here"
-DISCORD_WEBHOOK_URL = "your_discord_webhook_url_here"
-
-STOCK_CN_NAMES = {
-    "AAPL": "苹果",
-}
-```
-
-Yahoo Finance remains available as a fallback provider.
-
 ## Cloud Setup
 
 Use Python 3.11+.
 
-Install dependencies:
-
 ```bash
+cd /data/UpBottom
 python -m pip install -r requirements.txt
 ```
 
-For cloud deployment, copy your local `credentials.py` into the project root on the cloud machine. The file is intentionally ignored by git, so keep a private copy outside the repository as well.
+Copy your private `credentials.py` into the project root on the cloud machine:
 
 ```python
 TWELVE_DATA_API_KEY = "your_twelve_data_api_key"
@@ -85,27 +66,42 @@ STOCK_CN_NAMES = {
 }
 ```
 
-The only third-party runtime dependency is `matplotlib` for PNG chart rendering. `tzdata` is included so `zoneinfo` works consistently across minimal cloud images.
+`credentials.py` is git-ignored.
 
-First run, or occasional metadata refresh:
+The default dataset name is `stocks_2025_10`, and the default start date is `2025-10-01`. Runtime outputs go under:
 
-```bash
-python fetch_sp500_2026_and_mark.py --refresh-metadata
+```text
+data/stocks_2025_10/
+outputs/stocks_2025_10/
 ```
 
-Normal daily incremental run with the default S&P 500 universe:
+If your repo is not located at `/data/UpBottom`, either run commands from the repo directory or set:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --overlap-days 10
+export UPBOTTOM_ROOT="/your/path/UpBottom"
 ```
 
-Run with a custom stock universe:
+You can also separate different universes with:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --overlap-days 10
+export UPBOTTOM_DATASET="my_universe_2025_10"
 ```
 
-`symbols.csv` can be either a plain text file with one symbol per line:
+## Stock Universe
+
+Default universe is S&P 500. No extra argument is needed:
+
+```bash
+python fetch_sp500_2026_and_mark.py
+```
+
+You can provide a custom list:
+
+```bash
+python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv
+```
+
+Plain text format:
 
 ```text
 AAPL
@@ -113,7 +109,7 @@ MSFT
 BRK.B
 ```
 
-Or a CSV file with optional metadata columns:
+CSV format:
 
 ```csv
 symbol,source_symbol,english_name,chinese_name,sector,sub_industry
@@ -121,7 +117,54 @@ AAPL,AAPL,Apple Inc.,苹果,Information Technology,"Technology Hardware, Storage
 BRK-B,BRK.B,Berkshire Hathaway,伯克希尔,Financials,Multi-Sector Holdings
 ```
 
-`source_symbol` is the provider symbol used for downloading. `symbol` is the safe local ID used in filenames and alerts. If `symbol` is omitted, the script derives one automatically.
+`source_symbol` is the provider symbol used for downloading. `symbol` is the safe local ID used in filenames and Discord alerts. If `symbol` is omitted, the script derives one automatically.
+
+For S&P 500, metadata is cached in:
+
+```text
+outputs/stocks_2025_10/sp500_metadata.csv
+```
+
+For custom lists, metadata is cached in:
+
+```text
+outputs/stocks_2025_10/stock_metadata.csv
+```
+
+## Data Cache
+
+The pipeline is incremental by default.
+
+For every symbol/timeframe:
+
+```text
+read local CSV
+-> re-fetch from N days before the last local bar
+-> merge by datetime
+-> newer fetched row overwrites old local row
+-> write clean CSV back to disk
+-> scan from local organized data
+```
+
+Default overlap is 10 calendar days:
+
+```bash
+python fetch_sp500_2026_and_mark.py --overlap-days 10
+```
+
+This fills recent gaps and refreshes revised latest bars without re-downloading the full history every run.
+
+For the initial cache from `2025-10-01`, run once without `--skip-fetch`:
+
+```bash
+python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2
+```
+
+For a custom universe:
+
+```bash
+python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2025-10-01 --overlap-days 10 --workers 2
+```
 
 Fast local rescan without downloading:
 
@@ -129,89 +172,129 @@ Fast local rescan without downloading:
 python fetch_sp500_2026_and_mark.py --skip-fetch
 ```
 
-Send Discord alerts after the scan:
+## Discord Alerts
+
+After the scan, push alerts:
 
 ```bash
 python discord_signal_push.py --timeframe 4h
 python discord_signal_push.py --timeframe 1day
 ```
 
-Preview or force resend:
+Candidate rule:
+
+```text
+BM break exists
+and not B_FAIL
+and not C_FAIL
+and not STRUCTURE_FAILED
+```
+
+Push dedupe cache:
+
+```text
+outputs/stocks_2025_10/discord_push_cache.json
+```
+
+Cache key:
+
+```text
+symbol | timeframe | golden_A_time | golden_B_time | BM_break_time
+```
+
+Preview without sending:
 
 ```bash
 python discord_signal_push.py --timeframe 4h --dry-run
+```
+
+Force resend:
+
+```bash
 python discord_signal_push.py --timeframe 4h --force
 ```
 
-## Usage
+## Full Automation
 
-Download daily and 4-hour data from Twelve Data, scan signals, and export review charts:
+Recommended crontab uses New York time so market close timing automatically follows daylight saving time.
 
-```bash
-python3 fetch_sp500_2026_and_mark.py
-```
-
-Daily use is incremental by default: each existing CSV is loaded, the script re-fetches from 10 calendar days before the last local bar, then merges rows by timestamp before scanning. This keeps runs fast while filling recent gaps and refreshing revised latest bars.
+Edit crontab:
 
 ```bash
-python3 fetch_sp500_2026_and_mark.py --overlap-days 10
+crontab -e
 ```
 
-Use local data only for a fast rescan:
+Example:
+
+```cron
+TZ=America/New_York
+UPBOTTOM_ROOT=/data/UpBottom
+UPBOTTOM_DATASET=stocks_2025_10
+
+# 4h midday bar: market 09:30-13:30, run after 13:30 ET.
+45 13 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> logs/upbottom_4h_midday.log 2>&1
+
+# 4h close bar: run after market close.
+20 16 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> logs/upbottom_4h_close.log 2>&1
+
+# Daily bar: run after market close and after the 4h close job.
+40 16 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 1day >> logs/upbottom_1day_close.log 2>&1
+
+# Weekly metadata refresh. This updates S&P 500 English names and GICS industry data.
+15 10 * * 6 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> logs/upbottom_metadata.log 2>&1
+```
+
+Create the log directory once:
 
 ```bash
-python3 fetch_sp500_2026_and_mark.py --skip-fetch
+mkdir -p /data/UpBottom/logs
 ```
 
-Run a smoke test on a small subset:
+For a custom universe, add `--symbols-file /data/UpBottom/symbols.csv` to each `fetch_sp500_2026_and_mark.py` command. If you want the custom universe to have separate cache/output files, set a different dataset:
 
-```bash
-python3 fetch_sp500_2026_and_mark.py --limit 5 --workers 2
+```cron
+UPBOTTOM_DATASET=my_universe_2025_10
 ```
 
-Run a smoke test on a custom list:
+## Metadata Refresh
 
-```bash
-python3 fetch_sp500_2026_and_mark.py --symbols-file symbols.example.csv --limit 2 --workers 2
-```
+Metadata is used only for alert display:
 
-Refresh S&P 500 names and industry metadata only when needed:
+- stock ID
+- English name
+- Chinese name
+- sector
+- sub-industry
 
-```bash
-python3 fetch_sp500_2026_and_mark.py --refresh-metadata
-```
+S&P 500 metadata changes slowly, so weekly refresh is enough. Custom-list metadata comes from your `symbols.csv`; update that file whenever your generated universe changes.
 
-Use Yahoo instead:
-
-```bash
-python3 fetch_sp500_2026_and_mark.py --provider yahoo
-```
-
-Push Discord BM-break alerts after data has been updated and scanned:
-
-```bash
-python3 discord_signal_push.py --timeframe 4h
-python3 discord_signal_push.py --timeframe 1day
-```
-
-Preview without sending, or manually force a resend:
-
-```bash
-python3 discord_signal_push.py --timeframe 4h --dry-run
-python3 discord_signal_push.py --timeframe 4h --force
-```
-
-Outputs are written under:
+## Outputs
 
 ```text
-data/sp500_2026/
-outputs/sp500_2026/ad_signals.csv
-outputs/sp500_2026/sp500_metadata.csv
-outputs/sp500_2026/stock_metadata.csv
-outputs/sp500_2026/discord_push_cache.json
-outputs/sp500_2026/charts/
+data/stocks_2025_10/{1day,4h}/
+outputs/stocks_2025_10/ad_signals.csv
+outputs/stocks_2025_10/sp500_metadata.csv
+outputs/stocks_2025_10/stock_metadata.csv
+outputs/stocks_2025_10/discord_push_cache.json
+outputs/stocks_2025_10/charts/
 ```
 
-## Notes
+## Useful Commands
 
-This repo is built for human review. The generated PNG charts mark `GA`, `GB`, `B`, `BM`, `突破BM`, `CM`, optional `C`, and terminal `D` or failure points so the structure can be inspected visually.
+Smoke test:
+
+```bash
+python fetch_sp500_2026_and_mark.py --limit 5 --workers 2
+```
+
+Smoke test with custom universe:
+
+```bash
+python fetch_sp500_2026_and_mark.py --symbols-file symbols.example.csv --limit 2 --workers 2
+```
+
+Use Yahoo fallback:
+
+```bash
+python fetch_sp500_2026_and_mark.py --provider yahoo
+```

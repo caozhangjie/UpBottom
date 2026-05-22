@@ -1,9 +1,9 @@
-"""Fetch 2026 S&P 500 data, scan A-D bottom divergences, and mark charts.
+"""Fetch stock data, scan A-D bottom divergences, and mark charts.
 
 Outputs:
-- data/sp500_2026/{1day,4h}/{SYMBOL}_{timeframe}_indicators.csv
-- outputs/sp500_2026/ad_signals.csv
-- outputs/sp500_2026/charts/*.png
+- data/{dataset}/{1day,4h}/{SYMBOL}_{timeframe}_indicators.csv
+- outputs/{dataset}/ad_signals.csv
+- outputs/{dataset}/charts/*.png
 
 Market data can come from Yahoo Finance's chart endpoint or Twelve Data's
 time_series endpoint. Yahoo 4h is built from 1h bars; Twelve Data 4h is fetched
@@ -59,14 +59,15 @@ except ImportError:
     CREDENTIALS_STOCK_CN_NAMES = {}
 
 
-ROOT = Path("/data/UpBottom")
-DATA_ROOT = ROOT / "data" / "sp500_2026"
-OUTPUT_ROOT = ROOT / "outputs" / "sp500_2026"
+ROOT = Path(os.environ.get("UPBOTTOM_ROOT") or Path(__file__).resolve().parent)
+DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks_2025_10")
+DATA_ROOT = ROOT / "data" / DATASET_NAME
+OUTPUT_ROOT = ROOT / "outputs" / DATASET_NAME
 CHART_ROOT = OUTPUT_ROOT / "charts"
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
-START_DATE = "2026-01-01"
+START_DATE = "2025-10-01"
 TIMEFRAMES = ("1day", "4h")
 EASTERN = ZoneInfo("America/New_York")
 TWELVE_DATA_MIN_REQUEST_INTERVAL = 0.5
