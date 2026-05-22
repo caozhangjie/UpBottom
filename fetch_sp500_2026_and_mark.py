@@ -19,6 +19,7 @@ import io
 import json
 import math
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -114,6 +115,10 @@ def twelve_data_symbol(symbol: str) -> str:
 
 def safe_symbol(symbol: str) -> str:
     return yahoo_symbol(symbol).replace("/", "_")
+
+
+def is_us_equity_ticker(symbol: str) -> bool:
+    return re.fullmatch(r"[A-Z][A-Z0-9]{0,4}(?:[.-][A-Z])?", symbol.strip().upper()) is not None
 
 
 def write_metadata_csv(metadata: dict[str, dict[str, str]], output_path: Path) -> None:
@@ -249,7 +254,7 @@ def fetch_ssga_holdings_metadata(etf_symbol: str, limit: int | None = None) -> d
             continue
         english_name = row[0].strip()
         source_symbol = row[1].strip()
-        if not source_symbol or source_symbol == "-" or source_symbol.upper().endswith("USD"):
+        if not is_us_equity_ticker(source_symbol):
             continue
         safe = safe_symbol(source_symbol)
         weight = row[4].strip() if len(row) > 4 else ""
