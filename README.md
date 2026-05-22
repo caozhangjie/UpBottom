@@ -95,6 +95,8 @@ Default universe is S&P 500. No extra argument is needed:
 python fetch_sp500_2026_and_mark.py
 ```
 
+The default S&P 500 metadata source is Wikipedia. On some cloud machines, Wikipedia may return HTTP 403/rate-limit errors. If that happens, either reuse the local metadata cache, provide `--symbols-file`, or switch to an ETF-composition universe.
+
 You can provide a custom list:
 
 ```bash
@@ -119,16 +121,25 @@ BRK-B,BRK.B,Berkshire Hathaway,伯克希尔,Financials,Multi-Sector Holdings
 
 `source_symbol` is the provider symbol used for downloading. `symbol` is the safe local ID used in filenames and Discord alerts. If `symbol` is omitted, the script derives one automatically.
 
+You can also use Twelve Data ETF composition as a generated stock universe:
+
+```bash
+python fetch_sp500_2026_and_mark.py --universe-source etf-composition --universe-etf SPY
+```
+
+This calls Twelve Data's `/etfs/world/composition` endpoint and uses returned ETF holdings as the stock list. This is useful for SPY/VOO/IVV-style approximations or future ETF-based universes, but it is not the same as an official index constituent list. ETF holdings can include cash/other assets, may be limited to reported top holdings, and can differ from the index because of reporting cadence or fund construction.
+
 For S&P 500, metadata is cached in:
 
 ```text
 outputs/stocks_2025_10/sp500_metadata.csv
 ```
 
-For custom lists, metadata is cached in:
+For custom lists and ETF-composition universes, metadata is cached in:
 
 ```text
 outputs/stocks_2025_10/stock_metadata.csv
+outputs/stocks_2025_10/etf_SPY_metadata.csv
 ```
 
 ## Data Cache
@@ -164,6 +175,12 @@ For a custom universe:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2025-10-01 --overlap-days 10 --workers 2
+```
+
+For an ETF-composition universe:
+
+```bash
+python fetch_sp500_2026_and_mark.py --universe-source etf-composition --universe-etf SPY --start 2025-10-01 --overlap-days 10 --workers 2
 ```
 
 Fast local rescan without downloading:
@@ -266,7 +283,7 @@ Metadata is used only for alert display:
 - sector
 - sub-industry
 
-S&P 500 metadata changes slowly, so weekly refresh is enough. Custom-list metadata comes from your `symbols.csv`; update that file whenever your generated universe changes.
+S&P 500 metadata changes slowly, so weekly refresh is enough. Custom-list metadata comes from your `symbols.csv`; update that file whenever your generated universe changes. ETF-composition metadata is cached per ETF symbol, for example `etf_SPY_metadata.csv`; refresh it when you want to pick up new reported holdings.
 
 ## Outputs
 
@@ -275,6 +292,7 @@ data/stocks_2025_10/{1day,4h}/
 outputs/stocks_2025_10/ad_signals.csv
 outputs/stocks_2025_10/sp500_metadata.csv
 outputs/stocks_2025_10/stock_metadata.csv
+outputs/stocks_2025_10/etf_SPY_metadata.csv
 outputs/stocks_2025_10/discord_push_cache.json
 outputs/stocks_2025_10/charts/
 ```
@@ -291,6 +309,12 @@ Smoke test with custom universe:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --symbols-file symbols.example.csv --limit 2 --workers 2
+```
+
+Smoke test with ETF composition:
+
+```bash
+python fetch_sp500_2026_and_mark.py --universe-source etf-composition --universe-etf SPY --limit 5 --workers 2
 ```
 
 Use Yahoo fallback:

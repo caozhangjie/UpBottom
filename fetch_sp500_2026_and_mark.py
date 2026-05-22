@@ -67,6 +67,7 @@ CHART_ROOT = OUTPUT_ROOT / "charts"
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
+TWELVE_DATA_ETF_COMPOSITION_URL = "https://api.twelvedata.com/etfs/world/composition"
 START_DATE = "2025-10-01"
 TIMEFRAMES = ("1day", "4h")
 EASTERN = ZoneInfo("America/New_York")
@@ -271,6 +272,71 @@ def load_symbols_file(path: Path, limit: int | None = None) -> dict[str, dict[st
             "sector": str(row.get("sector") or row.get("industry") or ""),
             "sub_industry": str(row.get("sub_industry") or ""),
         }
+    return metadata
+
+
+def fetch_etf_composition_metadata(
+    etf_symbol: str,
+    api_key: str,
+    limit: int | None = None,
+) -> dict[str, dict[str, str]]:
+    params = {
+        "symbol": twelve_data_symbol(etf_symbol),
+        "apikey": api_key,
+    }
+    url = TWELVE_DATA_ETF_COMPOSITION_URL + "?" + urllib.parse.urlencode(params)
+    payload = http_get_json(url)
+    if payload.get("status") == "error":
+        raise RuntimeError(payload.get("message") or payload)
+
+    composition = ((payload.get("etf") or {}).get("composition") or {})
+    holdings = composition.get("top_holdings") or []
+    if not isinstance(holdings, list) or not holdings:
+        raise RuntimeError(f"Twelve Data returned no ETF holdings for {etf_symbol}.")
+
+    metadata: dict[str, dict[str, str]] = {}
+    for holding in holdings:
+        if not isinstance(holding, dict):
+            continue
+        source_symbol = str(holding.get("symbol") or "").strip()
+        if not source_symbol:
+            continue
+        safe = safe_symbol(source_symbol)
+        metadata[safe] = {
+            "symbol": safe,
+            "source_symbol": source_symbol,
+            "english_name": str(holding.get("name") or ""),
+            "chinese_name": str(
+                CREDENTIALS_STOCK_CN_NAMES.get(source_symbol)
+                or CREDENTIALS_STOCK_CN_NAMES.get(safe)
+                or ""
+            ),
+            "sector": "",
+            "sub_industry": f"ETF holding {etf_symbol} weight={holding.get('weight', '')}",
+        }
+        if limit and len(metadata) >= limit:
+            break
+    return metadata
+
+
+def get_etf_composition_metadata(
+    etf_symbol: str,
+    api_key: str | None,
+    limit: int | None = None,
+    refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    cache_path = OUTPUT_ROOT / f"etf_{safe_symbol(etf_symbol)}_metadata.csv"
+    if not refresh:
+        cached = load_metadata_csv(cache_path, limit)
+        if cached:
+            return cached
+    if not api_key:
+        raise RuntimeError(
+            "Missing Twelve Data API key for ETF composition. "
+            "Set TWELVE_DATA_API_KEY, pass --apikey, or use an existing cached ETF metadata file."
+        )
+    metadata = fetch_etf_composition_metadata(etf_symbol, api_key, limit)
+    write_metadata_csv(metadata, cache_path)
     return metadata
 
 
@@ -752,6 +818,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apikey", default=None, help="Twelve Data API key. Defaults to TWELVE_DATA_API_KEY.")
     parser.add_argument("--limit", type=int, default=None, help="Limit symbols for a quick smoke test.")
     parser.add_argument(
+        "--universe-source",
+        choices=["sp500", "etf-composition"],
+        default="sp500",
+        help=(
+            "Stock universe source when --symbols-file is not provided. "
+            "sp500 uses Wikipedia metadata; etf-composition uses Twelve Data ETF top holdings."
+        ),
+    )
+    parser.add_argument(
+        "--universe-etf",
+        default="SPY",
+        help="ETF symbol used when --universe-source etf-composition is selected.",
+    )
+    parser.add_argument(
         "--symbols-file",
         type=Path,
         default=None,
@@ -785,14 +865,26 @@ def main() -> int:
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     metadata: dict[str, dict[str, str]] | None = None
     symbol_filter: set[str] | None = None
+    twelve_data_api_key = args.apikey or os.environ.get("TWELVE_DATA_API_KEY") or CREDENTIALS_TWELVE_DATA_API_KEY
 
     if args.symbols_file:
         metadata = load_symbols_file(args.symbols_file, args.limit)
         write_metadata_csv(metadata, OUTPUT_ROOT / "stock_metadata.csv")
         symbol_filter = set(metadata)
+    elif args.universe_source == "etf-composition":
+        try:
+            metadata = get_etf_composition_metadata(
+                args.universe_etf,
+                twelve_data_api_key,
+                args.limit,
+                refresh=args.refresh_metadata,
+            )
+        except Exception as exc:
+            raise SystemExit(str(exc)) from exc
+        write_metadata_csv(metadata, OUTPUT_ROOT / "stock_metadata.csv")
+        symbol_filter = set(metadata)
 
     if not args.skip_fetch:
-        twelve_data_api_key = args.apikey or os.environ.get("TWELVE_DATA_API_KEY") or CREDENTIALS_TWELVE_DATA_API_KEY
         if args.provider == "twelve-data" and not twelve_data_api_key:
             raise SystemExit("Missing Twelve Data API key. Set TWELVE_DATA_API_KEY or pass --apikey.")
         if metadata is None:
@@ -801,7 +893,7 @@ def main() -> int:
         if not symbols:
             raise SystemExit("No symbols found. Check --symbols-file or metadata cache.")
         print(
-            f"provider={args.provider} symbols={len(symbols)} start={args.start} "
+            f"provider={args.provider} universe={args.universe_source} symbols={len(symbols)} start={args.start} "
             f"end={args.end or 'now'} overlap_days={args.overlap_days}"
         )
         ok_count = 0
