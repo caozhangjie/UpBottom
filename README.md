@@ -255,6 +255,17 @@ Cache key:
 symbol | timeframe | golden_A_time | golden_B_time | BM_break_time
 ```
 
+Alert messages include stock ID, English name, sector/sub-industry, structure points, and a Chinese progress label:
+
+```text
+突破后到高点过程中
+到高点后回踩进行中
+回踩结束但是没有二次突破
+已经二次突破
+```
+
+Chinese stock names are not included in Discord alerts.
+
 Preview without sending:
 
 ```bash
@@ -318,7 +329,6 @@ Metadata is used only for alert display:
 
 - stock ID
 - English name
-- Chinese name
 - sector
 - sub-industry
 

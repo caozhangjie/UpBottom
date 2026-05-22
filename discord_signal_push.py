@@ -33,12 +33,6 @@ try:
 except ImportError:
     CREDENTIALS_DISCORD_WEBHOOK_URL = ""
 
-try:
-    from credentials import STOCK_CN_NAMES as CREDENTIALS_STOCK_CN_NAMES
-except ImportError:
-    CREDENTIALS_STOCK_CN_NAMES = {}
-
-
 def load_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -47,11 +41,7 @@ def load_csv(path: Path) -> list[dict[str, str]]:
 
 
 def load_metadata(path: Path) -> dict[str, dict[str, str]]:
-    metadata = {row.get("symbol", ""): row for row in load_csv(path) if row.get("symbol")}
-    for symbol, chinese_name in CREDENTIALS_STOCK_CN_NAMES.items():
-        item = metadata.setdefault(symbol, {"symbol": symbol})
-        item["chinese_name"] = str(chinese_name)
-    return metadata
+    return {row.get("symbol", ""): row for row in load_csv(path) if row.get("symbol")}
 
 
 def default_metadata_path() -> Path:
@@ -96,11 +86,23 @@ def is_push_candidate(row: dict[str, str], timeframe: str) -> bool:
     return True
 
 
+def structure_stage_text(row: dict[str, str]) -> str:
+    c_items = json.loads(row.get("C_sequence") or "[]")
+    if row.get("D_time"):
+        return "已经二次突破"
+    if c_items:
+        return "回踩结束但是没有二次突破"
+    if row.get("CM_time"):
+        return "到高点后回踩进行中"
+    if row.get("BM_break_time"):
+        return "突破后到高点过程中"
+    return row.get("structure_status") or "-"
+
+
 def format_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> str:
     symbol = row.get("symbol", "")
     info = metadata.get(symbol, {})
     english_name = info.get("english_name") or "未获取"
-    chinese_name = info.get("chinese_name") or "未配置"
     sector = info.get("sector") or "未获取"
     sub_industry = info.get("sub_industry") or "未获取"
     c_items = json.loads(row.get("C_sequence") or "[]")
@@ -112,7 +114,6 @@ def format_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> st
         [
             f"**{symbol} | {row.get('timeframe', '')} | 底背离 BM 突破警报**",
             f"英文名：{english_name}",
-            f"中文名：{chinese_name}",
             f"行业：{sector} / {sub_industry}",
             f"第一金叉 GA：{row.get('golden_A_time', '-')} @ {row.get('golden_A_price', '-')}",
             f"BM：{row.get('BM_time', '-')} @ {row.get('BM_price', '-')}",
@@ -121,7 +122,7 @@ def format_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> st
             f"突破BM：{row.get('BM_break_time', '-')} @ {row.get('BM_break_price', '-')}",
             f"CM：{row.get('CM_time') or '-'} @ {row.get('CM_price') or '-'}",
             f"C：{c_text}",
-            f"状态：{row.get('structure_status', '-')}",
+            f"状态：{structure_stage_text(row)}",
             f"图表：{row.get('chart_file') or '-'}",
         ]
     )
@@ -134,11 +135,12 @@ def chunk_messages(messages: Iterable[str], limit: int = 1800) -> list[str]:
         item = message.strip()
         if not item:
             continue
-        if current and len(current) + len(item) + 4 > limit:
+        separator = "\n\n---\n\n"
+        if current and len(current) + len(separator) + len(item) > limit:
             chunks.append(current)
             current = item
         elif current:
-            current += "\n\n---\n\n" + item
+            current += separator + item
         else:
             current = item
     if current:
@@ -192,9 +194,9 @@ def main() -> int:
     if not pending:
         return 0
 
-    messages = [format_alert(row, metadata) for row in pending]
     header = f"【UpBottom 底背离提醒】{args.timeframe}，新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    chunks = chunk_messages([header, *messages])
+    messages = [f"{header}\n\n{format_alert(row, metadata)}" for row in pending]
+    chunks = chunk_messages(messages)
     if args.dry_run:
         for chunk in chunks:
             print("\n" + chunk + "\n")

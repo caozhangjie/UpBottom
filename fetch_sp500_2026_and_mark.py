@@ -302,7 +302,19 @@ def fetch_datahub_sp500_metadata(limit: int | None = None) -> dict[str, dict[str
 
 def fetch_default_sp500_metadata(proxy_etf: str, limit: int | None = None) -> dict[str, dict[str, str]]:
     try:
-        return fetch_ssga_holdings_metadata(proxy_etf, limit)
+        metadata = fetch_ssga_holdings_metadata(proxy_etf, limit)
+        try:
+            datahub = fetch_datahub_sp500_metadata()
+            for symbol, item in metadata.items():
+                reference = datahub.get(symbol)
+                if not reference:
+                    continue
+                item["sector"] = item.get("sector") or reference.get("sector", "")
+                item["sub_industry"] = reference.get("sub_industry", "") or item.get("sub_industry", "")
+                item["english_name"] = item.get("english_name") or reference.get("english_name", "")
+        except Exception as exc:
+            print(f"metadata_sector_enrich_failed={exc}")
+        return metadata
     except Exception as ssga_exc:
         try:
             return fetch_datahub_sp500_metadata(limit)
