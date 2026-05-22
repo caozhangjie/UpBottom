@@ -37,6 +37,7 @@ Corporate action guard:
 - Twelve Data daily/weekly/monthly stock prices are split-adjusted, but intraday data is not adjusted by the provider.
 - To protect 4h scans, the scanner skips bottom-divergence candidates when the MACD warmup/window contains an adjacent close jump of `8x` or more.
 - This guard is intended for reverse splits/splits and other corporate-action discontinuities, not ordinary volatility.
+- For off-hours maintenance, `--repair-split-jumps` checks local 1day data for `8x` split-adjustment jumps after the normal incremental fetch. If any are found, only affected symbols are fully refreshed from `--start`.
 
 ## Files
 
@@ -179,6 +180,18 @@ For a custom universe:
 python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2025-10-01 --overlap-days 10 --workers 2
 ```
 
+Off-hours split-adjustment maintenance:
+
+```bash
+python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps
+```
+
+This does not call Twelve Data's paid `/splits_calendar` endpoint. It checks the already-downloaded 1day cache for adjacent close jumps of `8x` or more, then fully refreshes only affected symbols. Repair details are written to:
+
+```text
+outputs/stocks_2025_10/split_jump_repairs.csv
+```
+
 Fast local rescan without downloading:
 
 ```bash
@@ -280,6 +293,9 @@ UPBOTTOM_DATASET=stocks_2025_10
 # Daily bar: run after market close and after the 4h close job.
 40 16 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 1day >> logs/upbottom_1day_close.log 2>&1
 
+# Off-hours split-adjustment maintenance. Runs after Twelve Data corporate-action updates are likely to have settled.
+30 3 * * 2-6 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> logs/upbottom_split_repair.log 2>&1
+
 # Weekly metadata refresh. This refreshes the default S&P 500-compatible universe from State Street SPY holdings, with DataHub CSV fallback.
 15 10 * * 6 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> logs/upbottom_metadata.log 2>&1
 ```
@@ -315,6 +331,7 @@ data/stocks_2025_10/{1day,4h}/
 outputs/stocks_2025_10/ad_signals.csv
 outputs/stocks_2025_10/sp500_metadata.csv
 outputs/stocks_2025_10/stock_metadata.csv
+outputs/stocks_2025_10/split_jump_repairs.csv
 outputs/stocks_2025_10/discord_push_cache.json
 outputs/stocks_2025_10/charts/    # only when --render-charts is used
 ```
@@ -337,6 +354,12 @@ Use Yahoo fallback:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --provider yahoo
+```
+
+Run off-hours split-adjustment repair:
+
+```bash
+python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps
 ```
 
 Render charts for manual validation:

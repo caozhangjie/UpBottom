@@ -71,6 +71,7 @@ TIMEFRAMES = ("1day", "4h")
 EASTERN = ZoneInfo("America/New_York")
 TWELVE_DATA_MIN_REQUEST_INTERVAL = 0.5
 TWELVE_DATA_MAX_ATTEMPTS = 4
+SPLIT_JUMP_RATIO = 8.0
 _twelve_data_lock = Lock()
 _last_twelve_data_request_at = 0.0
 
@@ -560,6 +561,130 @@ def fetch_symbol(
         return symbol, False, str(exc)
 
 
+def price_jump_events(rows: list[Row], ratio: float = SPLIT_JUMP_RATIO) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    for i in range(1, len(rows)):
+        prev = rows[i - 1].close
+        curr = rows[i].close
+        if prev <= 0 or curr <= 0:
+            continue
+        jump = max(curr / prev, prev / curr)
+        if jump >= ratio:
+            events.append(
+                {
+                    "datetime": rows[i].datetime,
+                    "previous_datetime": rows[i - 1].datetime,
+                    "previous_close": f"{prev:.6f}",
+                    "close": f"{curr:.6f}",
+                    "jump_ratio": f"{jump:.6f}",
+                }
+            )
+    return events
+
+
+def write_split_repair_csv(rows: list[dict[str, str]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "symbol",
+        "source_symbol",
+        "timeframe",
+        "datetime",
+        "previous_datetime",
+        "previous_close",
+        "close",
+        "jump_ratio",
+        "action",
+    ]
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def repair_split_jumps(
+    metadata: dict[str, dict[str, str]],
+    provider: str,
+    api_key: str | None,
+    start: str,
+    end: str | None,
+    workers: int,
+    ratio: float,
+) -> list[dict[str, str]]:
+    repair_rows: list[dict[str, str]] = []
+    affected: dict[str, dict[str, str]] = {}
+    for symbol, item in sorted(metadata.items()):
+        path = DATA_ROOT / "1day" / f"{symbol}_1day_indicators.csv"
+        if not path.exists():
+            continue
+        events = price_jump_events(load_rows(path, min_date=start), ratio)
+        for event in events:
+            repair_rows.append(
+                {
+                    "symbol": symbol,
+                    "source_symbol": item.get("source_symbol", symbol),
+                    "timeframe": "1day",
+                    **event,
+                    "action": "queued_full_refresh",
+                }
+            )
+        if events:
+            affected[symbol] = item
+
+    if not affected:
+        write_split_repair_csv([], OUTPUT_ROOT / "split_jump_repairs.csv")
+        print("split_jump_repairs=0")
+        return []
+
+    print(f"split_jump_repairs={len(affected)} threshold={ratio:g}")
+    for symbol in affected:
+        for timeframe in TIMEFRAMES:
+            path = DATA_ROOT / timeframe / f"{symbol}_{timeframe}_indicators.csv"
+            if path.exists():
+                path.unlink()
+
+    failures: list[tuple[str, str]] = []
+    ok_count = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                fetch_symbol,
+                item["source_symbol"],
+                start,
+                end,
+                provider,
+                api_key,
+                0,
+            ): symbol
+            for symbol, item in affected.items()
+        }
+        for future in as_completed(futures):
+            source_symbol, ok, detail = future.result()
+            if ok:
+                ok_count += 1
+                print(f"[REPAIRED] {source_symbol} {detail}")
+            else:
+                failures.append((source_symbol, detail))
+                print(f"[REPAIR_FAIL] {source_symbol} {detail}")
+
+    for source_symbol, detail in failures:
+        repair_rows.append(
+            {
+                "symbol": safe_symbol(source_symbol),
+                "source_symbol": source_symbol,
+                "timeframe": "1day",
+                "datetime": "",
+                "previous_datetime": "",
+                "previous_close": "",
+                "close": "",
+                "jump_ratio": "",
+                "action": f"full_refresh_failed: {detail}",
+            }
+        )
+    write_split_repair_csv(repair_rows, OUTPUT_ROOT / "split_jump_repairs.csv")
+    print(f"split_jump_repaired={ok_count} failed={len(failures)} index={OUTPUT_ROOT / 'split_jump_repairs.csv'}")
+    return repair_rows
+
+
 def data_files(symbol_filter: set[str] | None = None) -> Iterable[tuple[str, str, Path]]:
     for timeframe in TIMEFRAMES:
         folder = DATA_ROOT / timeframe
@@ -874,6 +999,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Refresh S&P 500 names and industry metadata instead of using the local metadata cache.",
     )
+    parser.add_argument(
+        "--repair-split-jumps",
+        action="store_true",
+        help=(
+            "After fetching, check 1day local data for split-adjustment jumps and fully refresh affected symbols. "
+            "Useful for off-hours maintenance."
+        ),
+    )
+    parser.add_argument(
+        "--split-jump-ratio",
+        type=float,
+        default=SPLIT_JUMP_RATIO,
+        help="Adjacent close jump threshold for --repair-split-jumps. Default: 8.",
+    )
     parser.add_argument("--skip-fetch", action="store_true", help="Use existing local CSV files only.")
     parser.add_argument(
         "--render-charts",
@@ -944,6 +1083,16 @@ def main() -> int:
             writer.writerow(["symbol", "error"])
             writer.writerows(failures)
         print(f"downloaded={ok_count} failed={len(failures)}")
+        if args.repair_split_jumps:
+            repair_split_jumps(
+                metadata,
+                args.provider,
+                twelve_data_api_key,
+                args.start,
+                args.end,
+                args.workers,
+                args.split_jump_ratio,
+            )
 
     records = scan_and_mark(symbol_filter, render_charts=args.render_charts)
     status_counts: dict[str, int] = {}
