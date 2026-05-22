@@ -1,9 +1,9 @@
 """Fetch stock data, scan A-D bottom divergences, and mark charts.
 
 Outputs:
-- data/{dataset}/{1day,4h}/{SYMBOL}_{timeframe}_indicators.csv
-- outputs/{dataset}/ad_signals.csv
-- outputs/{dataset}/charts/*.png
+- {runtime_root}/data/{dataset}/{1day,4h}/{SYMBOL}_{timeframe}_indicators.csv
+- {runtime_root}/outputs/{dataset}/ad_signals.csv
+- {runtime_root}/outputs/{dataset}/charts/*.png
 
 Market data can come from Yahoo Finance's chart endpoint or Twelve Data's
 time_series endpoint. Yahoo 4h is built from 1h bars; Twelve Data 4h is fetched
@@ -56,10 +56,10 @@ except ImportError:
     CREDENTIALS_STOCK_CN_NAMES = {}
 
 
-ROOT = Path(os.environ.get("UPBOTTOM_ROOT") or Path(__file__).resolve().parent)
+RUNTIME_ROOT = Path(os.environ.get("UPBOTTOM_RUNTIME_ROOT") or "/data/UpBottom")
 DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks_2025_10")
-DATA_ROOT = ROOT / "data" / DATASET_NAME
-OUTPUT_ROOT = ROOT / "outputs" / DATASET_NAME
+DATA_ROOT = RUNTIME_ROOT / "data" / DATASET_NAME
+OUTPUT_ROOT = RUNTIME_ROOT / "outputs" / DATASET_NAME
 CHART_ROOT = OUTPUT_ROOT / "charts"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
@@ -953,7 +953,7 @@ def scan_and_mark(symbol_filter: set[str] | None = None, render_charts: bool = F
             chart_name = f"{ordinal:05d}_{safe_symbol(sig.symbol)}_{sig.timeframe}_{st.structure_status}.png"
             chart_path = CHART_ROOT / chart_name
             render_png(sig, st, rows, chart_path)
-            record["chart_file"] = str(chart_path.relative_to(ROOT))
+            record["chart_file"] = str(chart_path.relative_to(RUNTIME_ROOT))
         else:
             record["chart_file"] = ""
         records.append(record)

@@ -59,7 +59,7 @@ Ignored local/runtime files:
 Use Python 3.11+.
 
 ```bash
-cd /data/UpBottom
+cd /root/UpBottom
 python -m pip install -r requirements.txt
 ```
 
@@ -76,17 +76,17 @@ STOCK_CN_NAMES = {
 
 `credentials.py` is git-ignored.
 
-The default dataset name is `stocks_2025_10`, and the default start date is `2025-10-01`. Runtime outputs go under:
+The code lives in `/root/UpBottom` by default. Runtime data and outputs live separately under `/data/UpBottom` by default. The default dataset name is `stocks_2025_10`, and the default start date is `2025-10-01`. Runtime outputs go under:
 
 ```text
-data/stocks_2025_10/
-outputs/stocks_2025_10/
+/data/UpBottom/data/stocks_2025_10/
+/data/UpBottom/outputs/stocks_2025_10/
 ```
 
-If your repo is not located at `/data/UpBottom`, either run commands from the repo directory or set:
+If you intentionally want a different runtime data/output root, set:
 
 ```bash
-export UPBOTTOM_ROOT="/your/path/UpBottom"
+export UPBOTTOM_RUNTIME_ROOT="/your/data/path/UpBottom"
 ```
 
 You can also separate different universes with:
@@ -134,13 +134,13 @@ The State Street SPY holdings source is an ETF-holdings proxy, not an official S
 For the default S&P 500-compatible universe, metadata is cached in:
 
 ```text
-outputs/stocks_2025_10/sp500_metadata.csv
+/data/UpBottom/outputs/stocks_2025_10/sp500_metadata.csv
 ```
 
 For custom lists, metadata is cached in:
 
 ```text
-outputs/stocks_2025_10/stock_metadata.csv
+/data/UpBottom/outputs/stocks_2025_10/stock_metadata.csv
 ```
 
 ## Data Cache
@@ -189,7 +189,7 @@ python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --worke
 This does not call Twelve Data's paid `/splits_calendar` endpoint. It checks the already-downloaded 1day cache for adjacent close jumps of `8x` or more, then fully refreshes only affected symbols. Repair details are written to:
 
 ```text
-outputs/stocks_2025_10/split_jump_repairs.csv
+/data/UpBottom/outputs/stocks_2025_10/split_jump_repairs.csv
 ```
 
 Fast local rescan without downloading:
@@ -220,10 +220,10 @@ If no Chinese font is found, the script still renders charts but prints `chart_f
 Charts are written to:
 
 ```text
-outputs/stocks_2025_10/charts/
+/data/UpBottom/outputs/stocks_2025_10/charts/
 ```
 
-The scan CSV always writes `outputs/stocks_2025_10/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
+The scan CSV always writes `/data/UpBottom/outputs/stocks_2025_10/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
 
 ## Discord Alerts
 
@@ -246,7 +246,7 @@ and not STRUCTURE_FAILED
 Push dedupe cache:
 
 ```text
-outputs/stocks_2025_10/discord_push_cache.json
+/data/UpBottom/outputs/stocks_2025_10/discord_push_cache.json
 ```
 
 Cache key:
@@ -298,23 +298,20 @@ Example:
 
 ```cron
 TZ=America/New_York
-UPBOTTOM_ROOT=/data/UpBottom
-UPBOTTOM_DATASET=stocks_2025_10
-
 # 4h midday bar: market 09:30-13:30, run after 13:30 ET.
-45 13 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> logs/upbottom_4h_midday.log 2>&1
+45 13 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
 
 # 4h close bar: run after market close.
-20 16 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> logs/upbottom_4h_close.log 2>&1
+20 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
 
 # Daily bar: run after market close and after the 4h close job.
-40 16 * * 1-5 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 1day >> logs/upbottom_1day_close.log 2>&1
+40 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 1day >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
 
 # Off-hours split-adjustment maintenance. Runs after Twelve Data corporate-action updates are likely to have settled.
-30 3 * * 2-6 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> logs/upbottom_split_repair.log 2>&1
+30 3 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
 
-# Weekly metadata refresh. This refreshes the default S&P 500-compatible universe from State Street SPY holdings, with DataHub CSV fallback.
-15 10 * * 6 cd /data/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> logs/upbottom_metadata.log 2>&1
+# Monthly metadata refresh: first Sunday of each month.
+15 10 1-7 * 0 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
 ```
 
 Create the log directory once:
@@ -343,13 +340,13 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 ## Outputs
 
 ```text
-data/stocks_2025_10/{1day,4h}/
-outputs/stocks_2025_10/ad_signals.csv
-outputs/stocks_2025_10/sp500_metadata.csv
-outputs/stocks_2025_10/stock_metadata.csv
-outputs/stocks_2025_10/split_jump_repairs.csv
-outputs/stocks_2025_10/discord_push_cache.json
-outputs/stocks_2025_10/charts/    # only when --render-charts is used
+/data/UpBottom/data/stocks_2025_10/{1day,4h}/
+/data/UpBottom/outputs/stocks_2025_10/ad_signals.csv
+/data/UpBottom/outputs/stocks_2025_10/sp500_metadata.csv
+/data/UpBottom/outputs/stocks_2025_10/stock_metadata.csv
+/data/UpBottom/outputs/stocks_2025_10/split_jump_repairs.csv
+/data/UpBottom/outputs/stocks_2025_10/discord_push_cache.json
+/data/UpBottom/outputs/stocks_2025_10/charts/    # only when --render-charts is used
 ```
 
 ## Useful Commands

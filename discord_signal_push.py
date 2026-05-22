@@ -20,9 +20,9 @@ from pathlib import Path
 from typing import Iterable
 
 
-ROOT = Path(os.environ.get("UPBOTTOM_ROOT") or Path(__file__).resolve().parent)
+RUNTIME_ROOT = Path(os.environ.get("UPBOTTOM_RUNTIME_ROOT") or "/data/UpBottom")
 DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks_2025_10")
-OUTPUT_ROOT = ROOT / "outputs" / DATASET_NAME
+OUTPUT_ROOT = RUNTIME_ROOT / "outputs" / DATASET_NAME
 SIGNALS_PATH = OUTPUT_ROOT / "ad_signals.csv"
 METADATA_PATH = OUTPUT_ROOT / "sp500_metadata.csv"
 STOCK_METADATA_PATH = OUTPUT_ROOT / "stock_metadata.csv"
