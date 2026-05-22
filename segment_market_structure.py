@@ -69,17 +69,58 @@ def trend_efficiency(rows: list[Row], start: int, end: int) -> float:
     return net / path
 
 
+def closes_near_window_low(rows: list[Row], start: int, end: int, percentile: float = 0.25) -> bool:
+    closes = [rows[i].close for i in range(start, end + 1)]
+    lo = min(closes)
+    hi = max(closes)
+    if hi <= lo:
+        return False
+    return rows[end].close <= lo + (hi - lo) * percentile
+
+
+def directional_steps(rows: list[Row], start: int, end: int, direction: str) -> int:
+    count = 0
+    for i in range(start + 1, end + 1):
+        if direction == STATE_UP and rows[i].close > rows[i - 1].close:
+            count += 1
+        elif direction == STATE_DOWN and rows[i].close < rows[i - 1].close:
+            count += 1
+    return count
+
+
+def breaks_recent_close_floor(
+    rows: list[Row],
+    pivot_index: int,
+    end: int,
+    lookback: int,
+    atr_value: float,
+    tolerance_atr: float = 0.2,
+) -> bool:
+    prior_end = pivot_index - 1
+    if prior_end < 0:
+        return True
+    prior_start = max(0, pivot_index - lookback)
+    prior_floor = min(rows[i].close for i in range(prior_start, prior_end + 1))
+    return rows[end].close <= prior_floor + tolerance_atr * atr_value
+
+
 def classify_states(
     rows: list[Row],
     lookback: int = 5,
     atr_period: int = 14,
     trend_atr: float = 1.4,
     min_efficiency: float = 0.45,
+    down_trend_atr: float | None = None,
+    down_min_efficiency: float = 0.58,
+    min_directional_share: float = 0.55,
+    down_break_lookback: int | None = None,
 ) -> list[str]:
     if not rows:
         return []
     atr = rolling_mean(true_ranges(rows), atr_period)
     states: list[str] = [STATE_RANGE for _ in rows]
+    down_threshold = down_trend_atr if down_trend_atr is not None else trend_atr * 1.25
+    down_floor_lookback = down_break_lookback if down_break_lookback is not None else lookback * 2
     for i in range(len(rows)):
         if i < lookback:
             continue
@@ -92,16 +133,24 @@ def classify_states(
         down_move = rows[high_index].close - rows[i].close
         up_efficiency = trend_efficiency(rows, low_index, i) if low_index < i else 0.0
         down_efficiency = trend_efficiency(rows, high_index, i) if high_index < i else 0.0
+        down_steps = directional_steps(rows, high_index, i, STATE_DOWN)
+        min_steps = max(1, int((i - start) * min_directional_share))
         if up_move >= trend_atr * atr_value and up_efficiency >= min_efficiency:
             for j in range(low_index, i + 1):
                 states[j] = STATE_UP
-        elif down_move >= trend_atr * atr_value and down_efficiency >= min_efficiency:
+        elif (
+            down_move >= down_threshold * atr_value
+            and down_efficiency >= down_min_efficiency
+            and down_steps >= min_steps
+            and closes_near_window_low(rows, start, i)
+            and breaks_recent_close_floor(rows, high_index, i, down_floor_lookback, atr_value)
+        ):
             for j in range(high_index, i + 1):
                 states[j] = STATE_DOWN
     return smooth_short_flips(states)
 
 
-def smooth_short_flips(states: list[str], min_len: int = 2) -> list[str]:
+def smooth_short_flips(states: list[str], min_len: int = 2, down_min_len: int = 5) -> list[str]:
     if not states:
         return states
     out = states[:]
@@ -110,7 +159,9 @@ def smooth_short_flips(states: list[str], min_len: int = 2) -> list[str]:
         end = start
         while end + 1 < len(out) and out[end + 1] == out[start]:
             end += 1
-        if end - start + 1 < min_len:
+        segment_len = end - start + 1
+        required_len = down_min_len if out[start] == STATE_DOWN else min_len
+        if segment_len < required_len:
             prev_state = out[start - 1] if start > 0 else None
             next_state = out[end + 1] if end + 1 < len(out) else None
             replacement = prev_state if prev_state == next_state and prev_state else STATE_RANGE
@@ -387,6 +438,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--atr-period", type=int, default=14)
     parser.add_argument("--trend-atr", type=float, default=1.4)
     parser.add_argument("--min-efficiency", type=float, default=0.45)
+    parser.add_argument("--down-trend-atr", type=float, default=None)
+    parser.add_argument("--down-min-efficiency", type=float, default=0.58)
+    parser.add_argument("--down-break-lookback", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=RUNTIME_ROOT / "outputs" / DATASET_NAME / "segments")
     return parser.parse_args()
 
@@ -397,12 +451,27 @@ def main() -> int:
     rows = load_rows(data_file, min_date=args.min_date)
     if not rows:
         raise SystemExit(f"No rows loaded from {data_file}")
-    states = classify_states(rows, args.lookback, args.atr_period, args.trend_atr, args.min_efficiency)
+    states = classify_states(
+        rows,
+        args.lookback,
+        args.atr_period,
+        args.trend_atr,
+        args.min_efficiency,
+        args.down_trend_atr,
+        args.down_min_efficiency,
+        down_break_lookback=args.down_break_lookback,
+    )
     segments = merge_segments(rows, states)
     safe = safe_symbol(args.symbol)
     trend_token = str(args.trend_atr).replace(".", "p")
     efficiency_token = str(args.min_efficiency).replace(".", "p")
-    prefix = f"{safe}_{args.timeframe}_{args.min_date}_lb{args.lookback}_atr{trend_token}_eff{efficiency_token}"
+    down_atr = args.down_trend_atr if args.down_trend_atr is not None else args.trend_atr * 1.25
+    down_atr_token = str(down_atr).replace(".", "p")
+    down_break_lookback = args.down_break_lookback if args.down_break_lookback is not None else args.lookback * 2
+    prefix = (
+        f"{safe}_{args.timeframe}_{args.min_date}_lb{args.lookback}_atr{trend_token}_"
+        f"down{down_atr_token}_db{down_break_lookback}_eff{efficiency_token}"
+    )
     csv_path = args.output_dir / f"{prefix}_segments.csv"
     png_path = args.output_dir / f"{prefix}_segments.png"
     write_segments_csv(segments, csv_path)
@@ -410,7 +479,10 @@ def main() -> int:
         rows,
         segments,
         png_path,
-        f"{safe} {args.timeframe} market structure | lookback={args.lookback} trend_atr={args.trend_atr}",
+        (
+            f"{safe} {args.timeframe} market structure | lookback={args.lookback} "
+            f"trend_atr={args.trend_atr} down_atr={down_atr}"
+        ),
     )
     counts: dict[str, int] = {}
     for segment in segments:
