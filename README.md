@@ -188,6 +188,15 @@ When you want to manually inspect detected structures, run a local rescan with c
 python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
 ```
 
+Charts use Chinese labels such as `突破BM` and `底背离`. On a minimal Linux cloud image, install a CJK font before rendering if labels appear as boxes:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y fonts-noto-cjk
+```
+
+If no Chinese font is found, the script still renders charts but prints `chart_font_warning=...`.
+
 Charts are written to:
 
 ```text

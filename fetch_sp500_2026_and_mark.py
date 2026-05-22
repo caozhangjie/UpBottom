@@ -617,6 +617,36 @@ def value_to_y(value: float, lo: float, hi: float, top: float, bottom: float) ->
     return bottom - ((value - lo) / (hi - lo)) * (bottom - top)
 
 
+def configure_chinese_chart_font(plt) -> None:
+    from matplotlib import font_manager
+
+    candidates = [
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "Source Han Sans SC",
+        "Source Han Sans CN",
+        "WenQuanYi Micro Hei",
+        "WenQuanYi Zen Hei",
+        "Microsoft YaHei",
+        "SimHei",
+        "PingFang SC",
+        "Heiti SC",
+        "Arial Unicode MS",
+    ]
+    available = {font.name for font in font_manager.fontManager.ttflist}
+    chosen = next((name for name in candidates if name in available), None)
+    if chosen:
+        plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
+        plt.rcParams["font.family"] = "sans-serif"
+    else:
+        print(
+            "chart_font_warning=no Chinese font found; install fonts-noto-cjk "
+            "or another CJK font if chart labels render as boxes."
+        )
+        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
 def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path) -> None:
     import matplotlib
 
@@ -648,8 +678,7 @@ def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
     dea = ema(dif, 9)
     hist = [d - e for d, e in zip(dif, dea)]
 
-    plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
-    plt.rcParams["axes.unicode_minus"] = False
+    configure_chinese_chart_font(plt)
     fig, (price_ax, macd_ax) = plt.subplots(
         2,
         1,
@@ -716,7 +745,7 @@ def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
     mark_price(st.BM_index, st.BM_price, "BM", purple)
     mark_price(sig.B_index, sig.B_price, "B", yellow, dy=-16)
     mark_price(sig.golden_B_index, sig.golden_B_price, "GB", black)
-    mark_price(st.BM_break_index, st.BM_break_price, "BM break", blue)
+    mark_price(st.BM_break_index, st.BM_break_price, "突破BM", blue)
     mark_price(st.CM_index, st.CM_price, "CM", purple)
     c_point = (st.C_sequence or [None])[0]
     if c_point:
@@ -744,7 +773,7 @@ def render_png(sig: ABSignal, st: ADStructure, rows: list[Row], chart_path: Path
             zorder=5,
         )
         macd_ax.annotate(
-            "Bull div",
+            "底背离",
             ((sig.macd_A_index + sig.macd_B_index) / 2, max(sig.macd_A_value, sig.macd_B_value)),
             xytext=(0, 10),
             textcoords="offset points",
