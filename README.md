@@ -31,6 +31,13 @@ Structure points:
 
 All structure comparisons use `close`.
 
+Corporate action guard:
+
+- Twelve Data requests explicitly use `adjust=splits`.
+- Twelve Data daily/weekly/monthly stock prices are split-adjusted, but intraday data is not adjusted by the provider.
+- To protect 4h scans, the scanner skips bottom-divergence candidates when the MACD warmup/window contains an adjacent close jump of `8x` or more.
+- This guard is intended for reverse splits/splits and other corporate-action discontinuities, not ordinary volatility.
+
 ## Files
 
 - `fetch_sp500_2026_and_mark.py`: main data/update/scan pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists. PNG charts are optional manual validation output.

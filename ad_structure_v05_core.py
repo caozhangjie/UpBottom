@@ -33,6 +33,7 @@ TIMEFRAMES = ("4h", "1day", "3day", "1week")
 MIN_DATE = "2000-01-01"
 STATUS_ALL = "ALL"
 STATUS_COMPLETE = "D_TRIGGERED"
+CORPORATE_ACTION_JUMP_RATIO = 8.0
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,22 @@ def load_rows(path: Path, min_date: str = MIN_DATE) -> list[Row]:
     return rows
 
 
+def has_large_price_jump(closes: list[float], start: int, end: int, ratio: float = CORPORATE_ACTION_JUMP_RATIO) -> bool:
+    if start >= end:
+        return False
+    lo = max(1, start + 1)
+    hi = min(len(closes), end + 1)
+    for i in range(lo, hi):
+        prev = closes[i - 1]
+        curr = closes[i]
+        if prev <= 0 or curr <= 0:
+            continue
+        jump = max(curr / prev, prev / curr)
+        if jump >= ratio:
+            return True
+    return False
+
+
 def detect_ab_signals(symbol: str, timeframe: str, path: Path, rows: list[Row]) -> list[ABSignal]:
     closes = [r.close for r in rows]
     times = [r.datetime for r in rows]
@@ -205,6 +222,9 @@ def detect_ab_signals(symbol: str, timeframe: str, path: Path, rows: list[Row]) 
         curr = valid_golden[i]
         prev_index = int(prev["index"])
         curr_index = int(curr["index"])
+        macd_warmup_index = max(0, prev_index - 35)
+        if has_large_price_jump(closes, macd_warmup_index, curr_index):
+            continue
         prev_extremum = float(prev["extremum_value"])
         curr_extremum = float(curr["extremum_value"])
         ab_macd_fast_max = max(dif[prev_index : curr_index + 1])
