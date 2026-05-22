@@ -15,12 +15,15 @@ from __future__ import annotations
 import argparse
 import csv
 import http.client
+import io
 import json
 import math
 import os
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -65,8 +68,9 @@ OUTPUT_ROOT = ROOT / "outputs" / DATASET_NAME
 CHART_ROOT = OUTPUT_ROOT / "charts"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
-TWELVE_DATA_ETF_COMPOSITION_URL = "https://api.twelvedata.com/etfs/world/composition"
 DEFAULT_SP500_PROXY_ETF = "SPY"
+SSGA_HOLDINGS_XLSX_URL = "https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-{symbol}.xlsx"
+DATAHUB_SP500_CSV_URL = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
 START_DATE = "2025-10-01"
 TIMEFRAMES = ("1day", "4h")
 EASTERN = ZoneInfo("America/New_York")
@@ -86,6 +90,18 @@ def http_get_json(url: str, timeout: int = 30) -> dict:
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def http_get_bytes(url: str, timeout: int = 30) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "*/*",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
 
 
 def yahoo_symbol(symbol: str) -> str:
@@ -190,73 +206,115 @@ def load_symbols_file(path: Path, limit: int | None = None) -> dict[str, dict[st
     return metadata
 
 
-def fetch_etf_composition_metadata(
-    etf_symbol: str,
-    api_key: str,
-    limit: int | None = None,
-) -> dict[str, dict[str, str]]:
-    params = {
-        "symbol": twelve_data_symbol(etf_symbol),
-        "apikey": api_key,
-    }
-    url = TWELVE_DATA_ETF_COMPOSITION_URL + "?" + urllib.parse.urlencode(params)
-    payload = http_get_json(url)
-    if payload.get("status") == "error":
-        raise RuntimeError(payload.get("message") or payload)
+def xlsx_cell_text(cell: ET.Element, shared_strings: list[str]) -> str:
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    value = cell.find("a:v", ns)
+    if value is None or value.text is None:
+        return ""
+    text = value.text
+    if cell.get("t") == "s":
+        return shared_strings[int(text)]
+    return text
 
-    composition = ((payload.get("etf") or {}).get("composition") or {})
-    holdings = composition.get("top_holdings") or []
-    if not isinstance(holdings, list) or not holdings:
-        raise RuntimeError(f"Twelve Data returned no ETF holdings for {etf_symbol}.")
+
+def read_first_xlsx_sheet_rows(content: bytes) -> list[list[str]]:
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for item in root.findall("a:si", ns):
+                shared_strings.append("".join(node.text or "" for node in item.findall(".//a:t", ns)))
+
+        sheet_name = next(name for name in zf.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"))
+        sheet = ET.fromstring(zf.read(sheet_name))
+        rows: list[list[str]] = []
+        for row in sheet.findall(".//a:row", ns):
+            values = [xlsx_cell_text(cell, shared_strings) for cell in row.findall("a:c", ns)]
+            rows.append(values)
+    return rows
+
+
+def fetch_ssga_holdings_metadata(etf_symbol: str, limit: int | None = None) -> dict[str, dict[str, str]]:
+    url = SSGA_HOLDINGS_XLSX_URL.format(symbol=urllib.parse.quote(etf_symbol.lower()))
+    rows = read_first_xlsx_sheet_rows(http_get_bytes(url))
+    try:
+        header_index = next(i for i, row in enumerate(rows) if row[:2] == ["Name", "Ticker"])
+    except StopIteration as exc:
+        raise RuntimeError(f"Could not find holdings header in State Street {etf_symbol} xlsx.") from exc
 
     metadata: dict[str, dict[str, str]] = {}
-    for holding in holdings:
-        if not isinstance(holding, dict):
+    for row in rows[header_index + 1 :]:
+        if len(row) < 2:
             continue
-        source_symbol = str(holding.get("symbol") or "").strip()
+        english_name = row[0].strip()
+        source_symbol = row[1].strip()
+        if not source_symbol or source_symbol == "-" or source_symbol.upper().endswith("USD"):
+            continue
+        safe = safe_symbol(source_symbol)
+        weight = row[4].strip() if len(row) > 4 else ""
+        metadata[safe] = {
+            "symbol": safe,
+            "source_symbol": source_symbol,
+            "english_name": english_name,
+            "chinese_name": str(
+                CREDENTIALS_STOCK_CN_NAMES.get(source_symbol)
+                or CREDENTIALS_STOCK_CN_NAMES.get(safe)
+                or ""
+            ),
+            "sector": row[5].strip() if len(row) > 5 and row[5].strip() != "-" else "",
+            "sub_industry": f"State Street {etf_symbol.upper()} holding weight={weight}",
+        }
+        if limit and len(metadata) >= limit:
+            break
+    if not metadata:
+        raise RuntimeError(f"State Street {etf_symbol} xlsx returned no stock holdings.")
+    return metadata
+
+
+def fetch_datahub_sp500_metadata(limit: int | None = None) -> dict[str, dict[str, str]]:
+    text = http_get_bytes(DATAHUB_SP500_CSV_URL).decode("utf-8-sig")
+    rows = list(csv.DictReader(io.StringIO(text)))
+    if limit:
+        rows = rows[:limit]
+    metadata: dict[str, dict[str, str]] = {}
+    for row in rows:
+        source_symbol = str(row.get("Symbol") or "").strip()
         if not source_symbol:
             continue
         safe = safe_symbol(source_symbol)
         metadata[safe] = {
             "symbol": safe,
             "source_symbol": source_symbol,
-            "english_name": str(holding.get("name") or ""),
+            "english_name": str(row.get("Security") or ""),
             "chinese_name": str(
                 CREDENTIALS_STOCK_CN_NAMES.get(source_symbol)
                 or CREDENTIALS_STOCK_CN_NAMES.get(safe)
                 or ""
             ),
-            "sector": "",
-            "sub_industry": f"ETF holding {etf_symbol} weight={holding.get('weight', '')}",
+            "sector": str(row.get("GICS Sector") or ""),
+            "sub_industry": str(row.get("GICS Sub-Industry") or ""),
         }
-        if limit and len(metadata) >= limit:
-            break
+    if not metadata:
+        raise RuntimeError("DataHub S&P 500 CSV returned no symbols.")
     return metadata
 
 
-def get_etf_composition_metadata(
-    etf_symbol: str,
-    api_key: str | None,
-    limit: int | None = None,
-    refresh: bool = False,
-) -> dict[str, dict[str, str]]:
-    cache_path = OUTPUT_ROOT / f"etf_{safe_symbol(etf_symbol)}_metadata.csv"
-    if not refresh:
-        cached = load_metadata_csv(cache_path, limit)
-        if cached:
-            return cached
-    if not api_key:
-        raise RuntimeError(
-            "Missing Twelve Data API key for ETF composition. "
-            "Set TWELVE_DATA_API_KEY, pass --apikey, or use an existing cached ETF metadata file."
-        )
-    metadata = fetch_etf_composition_metadata(etf_symbol, api_key, limit)
-    write_metadata_csv(metadata, cache_path)
-    return metadata
+def fetch_default_sp500_metadata(proxy_etf: str, limit: int | None = None) -> dict[str, dict[str, str]]:
+    try:
+        return fetch_ssga_holdings_metadata(proxy_etf, limit)
+    except Exception as ssga_exc:
+        try:
+            return fetch_datahub_sp500_metadata(limit)
+        except Exception as datahub_exc:
+            raise RuntimeError(
+                f"Could not fetch default S&P 500 universe from State Street {proxy_etf} "
+                f"or DataHub fallback. State Street error: {ssga_exc}. "
+                f"DataHub error: {datahub_exc}."
+            ) from datahub_exc
 
 
 def get_sp500_metadata(
-    api_key: str | None,
     limit: int | None = None,
     refresh: bool = False,
     proxy_etf: str = DEFAULT_SP500_PROXY_ETF,
@@ -266,19 +324,13 @@ def get_sp500_metadata(
         cached = load_metadata_csv(cache_path, limit)
         if cached:
             return cached
-    if not api_key:
-        raise RuntimeError(
-            "Missing Twelve Data API key for default S&P 500 universe. "
-            "Set TWELVE_DATA_API_KEY, pass --apikey, or provide --symbols-file."
-        )
-    metadata = fetch_etf_composition_metadata(proxy_etf, api_key, limit)
+    metadata = fetch_default_sp500_metadata(proxy_etf, limit)
     write_metadata_csv(metadata, cache_path)
     return metadata
 
 
 def fetch_sp500_symbols(limit: int | None = None) -> list[str]:
-    api_key = os.environ.get("TWELVE_DATA_API_KEY") or CREDENTIALS_TWELVE_DATA_API_KEY
-    metadata = get_sp500_metadata(api_key, limit)
+    metadata = get_sp500_metadata(limit)
     symbols = [item["source_symbol"] for _, item in sorted(metadata.items())]
     return symbols[:limit] if limit else symbols
 
@@ -745,20 +797,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None, help="Limit symbols for a quick smoke test.")
     parser.add_argument(
         "--universe-source",
-        choices=["sp500", "etf-composition"],
+        choices=["sp500"],
         default="sp500",
         help=(
             "Stock universe source when --symbols-file is not provided. "
-            "sp500 uses local cache or a Twelve Data ETF composition proxy; "
-            "etf-composition uses Twelve Data ETF top holdings directly."
+            "sp500 uses local cache, State Street SPY holdings, or the DataHub CSV fallback."
         ),
     )
     parser.add_argument(
         "--universe-etf",
         default="SPY",
         help=(
-            "ETF symbol used by --universe-source etf-composition, and as the proxy ETF "
-            "when default sp500 metadata must be refreshed or created."
+            "State Street ETF symbol used as the default sp500 proxy when metadata must be refreshed or created. "
+            "SPY is the tested default."
         ),
     )
     parser.add_argument(
@@ -801,18 +852,6 @@ def main() -> int:
         metadata = load_symbols_file(args.symbols_file, args.limit)
         write_metadata_csv(metadata, OUTPUT_ROOT / "stock_metadata.csv")
         symbol_filter = set(metadata)
-    elif args.universe_source == "etf-composition":
-        try:
-            metadata = get_etf_composition_metadata(
-                args.universe_etf,
-                twelve_data_api_key,
-                args.limit,
-                refresh=args.refresh_metadata,
-            )
-        except Exception as exc:
-            raise SystemExit(str(exc)) from exc
-        write_metadata_csv(metadata, OUTPUT_ROOT / "stock_metadata.csv")
-        symbol_filter = set(metadata)
 
     if not args.skip_fetch:
         if args.provider == "twelve-data" and not twelve_data_api_key:
@@ -820,7 +859,6 @@ def main() -> int:
         if metadata is None:
             try:
                 metadata = get_sp500_metadata(
-                    twelve_data_api_key,
                     args.limit,
                     refresh=args.refresh_metadata,
                     proxy_etf=args.universe_etf,
