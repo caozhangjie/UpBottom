@@ -89,7 +89,7 @@ export UPBOTTOM_DATASET="my_universe_2025_10"
 
 ## Stock Universe
 
-Default universe is S&P 500. No extra argument is needed:
+Default universe is S&P 500. No extra argument is needed. In other words, `--universe-source` defaults to `sp500`, so the normal run command should not include any universe argument:
 
 ```bash
 python fetch_sp500_2026_and_mark.py
@@ -121,7 +121,7 @@ BRK-B,BRK.B,Berkshire Hathaway,伯克希尔,Financials,Multi-Sector Holdings
 
 `source_symbol` is the provider symbol used for downloading. `symbol` is the safe local ID used in filenames and Discord alerts. If `symbol` is omitted, the script derives one automatically.
 
-You can also use Twelve Data ETF composition as a generated stock universe:
+Only use `--universe-source etf-composition` when you intentionally want an ETF-holdings universe instead of the default S&P 500 universe:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --universe-source etf-composition --universe-etf SPY
@@ -165,11 +165,13 @@ python fetch_sp500_2026_and_mark.py --overlap-days 10
 
 This fills recent gaps and refreshes revised latest bars without re-downloading the full history every run.
 
-For the initial cache from `2025-10-01`, run once without `--skip-fetch`:
+For the initial default S&P 500 cache from `2025-10-01`, run once without `--skip-fetch`:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2
 ```
+
+This command uses S&P 500 because `--universe-source sp500` is the default.
 
 For a custom universe:
 
