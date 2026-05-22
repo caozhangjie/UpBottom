@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ad_structure_v05_core import Row, load_rows
+from ad_structure_v05_core import Row, ema, load_rows
 from fetch_sp500_2026_and_mark import DATASET_NAME, RUNTIME_ROOT, configure_chinese_chart_font, safe_symbol
 
 
@@ -59,6 +59,56 @@ def rolling_mean(values: list[float], period: int) -> list[float]:
         count = min(i + 1, period)
         out.append(total / count if count else 0.0)
     return out
+
+
+def macd_dif_dea(rows: list[Row]) -> tuple[list[float], list[float]]:
+    closes = [row.close for row in rows]
+    ema_fast = ema(closes, 12)
+    ema_slow = ema(closes, 26)
+    dif = [fast - slow for fast, slow in zip(ema_fast, ema_slow)]
+    dea = ema(dif, 9)
+    return dif, dea
+
+
+def has_macd_momentum(
+    dif: list[float],
+    dea: list[float],
+    atr: list[float],
+    rows: list[Row],
+    start: int,
+    end: int,
+    direction: str,
+    min_abs_atr: float,
+    min_side_share: float,
+) -> bool:
+    if end <= start:
+        return False
+    side_count = 0
+    strong_count = 0
+    values: list[float] = []
+    for i in range(start, end + 1):
+        atr_value = max(atr[i], rows[i].close * 0.001, 1e-9)
+        normalized_dif = dif[i] / atr_value
+        values.append(normalized_dif)
+        if direction == STATE_UP:
+            if dif[i] > 0 and dea[i] > 0:
+                side_count += 1
+            if normalized_dif >= min_abs_atr:
+                strong_count += 1
+        elif direction == STATE_DOWN:
+            if dif[i] < 0 and dea[i] < 0:
+                side_count += 1
+            if normalized_dif <= -min_abs_atr:
+                strong_count += 1
+    length = end - start + 1
+    side_share = side_count / length
+    strong_share = strong_count / length
+    mean_value = sum(values) / length
+    if direction == STATE_UP:
+        return side_share >= min_side_share and (strong_share >= min_side_share or mean_value >= min_abs_atr)
+    if direction == STATE_DOWN:
+        return side_share >= min_side_share and (strong_share >= min_side_share or mean_value <= -min_abs_atr)
+    return False
 
 
 def trend_efficiency(rows: list[Row], start: int, end: int) -> float:
@@ -114,10 +164,13 @@ def classify_states(
     down_min_efficiency: float = 0.58,
     min_directional_share: float = 0.55,
     down_break_lookback: int | None = None,
+    macd_min_atr: float = 0.08,
+    macd_side_share: float = 0.6,
 ) -> list[str]:
     if not rows:
         return []
     atr = rolling_mean(true_ranges(rows), atr_period)
+    dif, dea = macd_dif_dea(rows)
     states: list[str] = [STATE_RANGE for _ in rows]
     down_threshold = down_trend_atr if down_trend_atr is not None else trend_atr * 1.25
     down_floor_lookback = down_break_lookback if down_break_lookback is not None else lookback * 2
@@ -135,7 +188,11 @@ def classify_states(
         down_efficiency = trend_efficiency(rows, high_index, i) if high_index < i else 0.0
         down_steps = directional_steps(rows, high_index, i, STATE_DOWN)
         min_steps = max(1, int((i - start) * min_directional_share))
-        if up_move >= trend_atr * atr_value and up_efficiency >= min_efficiency:
+        if (
+            up_move >= trend_atr * atr_value
+            and up_efficiency >= min_efficiency
+            and has_macd_momentum(dif, dea, atr, rows, low_index, i, STATE_UP, macd_min_atr, macd_side_share)
+        ):
             for j in range(low_index, i + 1):
                 states[j] = STATE_UP
         elif (
@@ -144,6 +201,7 @@ def classify_states(
             and down_steps >= min_steps
             and closes_near_window_low(rows, start, i)
             and breaks_recent_close_floor(rows, high_index, i, down_floor_lookback, atr_value)
+            and has_macd_momentum(dif, dea, atr, rows, high_index, i, STATE_DOWN, macd_min_atr, macd_side_share)
         ):
             for j in range(high_index, i + 1):
                 states[j] = STATE_DOWN
@@ -441,6 +499,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--down-trend-atr", type=float, default=None)
     parser.add_argument("--down-min-efficiency", type=float, default=0.58)
     parser.add_argument("--down-break-lookback", type=int, default=None)
+    parser.add_argument("--macd-min-atr", type=float, default=0.08)
+    parser.add_argument("--macd-side-share", type=float, default=0.6)
     parser.add_argument("--output-dir", type=Path, default=RUNTIME_ROOT / "outputs" / DATASET_NAME / "segments")
     return parser.parse_args()
 
@@ -460,6 +520,8 @@ def main() -> int:
         args.down_trend_atr,
         args.down_min_efficiency,
         down_break_lookback=args.down_break_lookback,
+        macd_min_atr=args.macd_min_atr,
+        macd_side_share=args.macd_side_share,
     )
     segments = merge_segments(rows, states)
     safe = safe_symbol(args.symbol)
@@ -468,9 +530,12 @@ def main() -> int:
     down_atr = args.down_trend_atr if args.down_trend_atr is not None else args.trend_atr * 1.25
     down_atr_token = str(down_atr).replace(".", "p")
     down_break_lookback = args.down_break_lookback if args.down_break_lookback is not None else args.lookback * 2
+    macd_token = str(args.macd_min_atr).replace(".", "p")
+    macd_side_token = str(args.macd_side_share).replace(".", "p")
     prefix = (
         f"{safe}_{args.timeframe}_{args.min_date}_lb{args.lookback}_atr{trend_token}_"
-        f"down{down_atr_token}_db{down_break_lookback}_eff{efficiency_token}"
+        f"down{down_atr_token}_db{down_break_lookback}_macd{macd_token}_side{macd_side_token}_"
+        f"eff{efficiency_token}"
     )
     csv_path = args.output_dir / f"{prefix}_segments.csv"
     png_path = args.output_dir / f"{prefix}_segments.png"
@@ -481,7 +546,8 @@ def main() -> int:
         png_path,
         (
             f"{safe} {args.timeframe} market structure | lookback={args.lookback} "
-            f"trend_atr={args.trend_atr} down_atr={down_atr}"
+            f"trend_atr={args.trend_atr} down_atr={down_atr} "
+            f"macd_atr={args.macd_min_atr} macd_side={args.macd_side_share}"
         ),
     )
     counts: dict[str, int] = {}
