@@ -13,7 +13,8 @@ v0.5 behavior:
 - BM Break is the first post-B close above BM_price
 - CM is the first future-3 confirmed high after BM Break
 - Cn/CnH are optional future-3 confirmed low/high points after CM
-- D triggers on the first close above CM_price before structure failure
+- D triggers on the first close above CM_price after C is confirmed and before
+  structure failure
 
 The module intentionally does not render charts. It scans local CSV files and
 exports a compact index CSV that can be used for later charting or audit.
@@ -368,7 +369,7 @@ def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
         failure = check_failure(i, current_c)
         if failure is not None:
             return failure
-        if rows[i].close > st.CM_price:
+        if current_c is not None and rows[i].close > st.CM_price:
             st.D_index = i
             st.D_time = rows[i].datetime
             st.D_price = rows[i].close
