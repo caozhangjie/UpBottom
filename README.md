@@ -48,6 +48,9 @@ Corporate action guard:
 - `credentials.example.py`: local credential template.
 - `requirements.txt`: cloud/local Python dependencies.
 - `symbols.example.csv`: example custom stock universe file.
+- `us_1610_stock_universe.csv`: source universe used to build the US 1610 stock list.
+- `symbols_us_1610.csv`: pipeline-ready US 1610 list with symbol metadata.
+- `build_us_1610_symbols.py`: rebuilds `symbols_us_1610.csv` from the source universe and Nasdaq metadata.
 
 Ignored local/runtime files:
 
@@ -110,6 +113,18 @@ You can provide a custom list:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv
+```
+
+The checked-in US 1610 universe is ready to use:
+
+```bash
+python fetch_sp500_2026_and_mark.py --symbols-file symbols_us_1610.csv --start 2025-10-01 --overlap-days 10 --workers 2
+```
+
+To rebuild that list from `us_1610_stock_universe.csv` and fresh Nasdaq metadata:
+
+```bash
+python build_us_1610_symbols.py
 ```
 
 Plain text format:
