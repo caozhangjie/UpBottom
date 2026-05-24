@@ -23,8 +23,8 @@ Structure points:
 - `B`: lowest close between `GA` and `GB`.
 - `BM`: highest close between `GA` and `GB`.
 - `突破BM`: first close after `B` that breaks above `BM_price`.
-- `CM`: first close after `突破BM` that is higher than the previous 5 closes and next 5 closes.
-- `C`: first close after `CM` that is lower than the previous 5 closes and next 5 closes.
+- `CM`: first close after `突破BM` that is higher than the previous 4 closes and next 4 closes.
+- `C`: first close after `CM` that is lower than the previous 4 closes and next 4 closes.
 - `D`: first close above `CM_price` before structure failure.
 - `B_FAIL`: after `B`, close falls below `B_price * 0.95`.
 - `C_FAIL`: after `C`, close falls below `C_price * 0.95`.

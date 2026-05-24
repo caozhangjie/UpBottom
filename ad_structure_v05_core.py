@@ -96,7 +96,7 @@ class ADStructure:
     CM_index: int | None = None
     CM_time: str | None = None
     CM_price: float | None = None
-    CM_confirm_rule: str = "close[i] > max(close[i-5:i]) and close[i] > max(close[i+1:i+6])"
+    CM_confirm_rule: str = "close[i] > max(close[i-4:i]) and close[i] > max(close[i+1:i+5])"
     C_sequence: list[dict] | None = None
     D_index: int | None = None
     D_time: str | None = None
@@ -270,19 +270,19 @@ def detect_ab_signals(symbol: str, timeframe: str, path: Path, rows: list[Row]) 
 
 def future_high_confirmed(rows: list[Row], i: int) -> bool:
     return (
-        i - 5 >= 0
-        and i + 5 < len(rows)
-        and rows[i].close > max(r.close for r in rows[i - 5 : i])
-        and rows[i].close > max(r.close for r in rows[i + 1 : i + 6])
+        i - 4 >= 0
+        and i + 4 < len(rows)
+        and rows[i].close > max(r.close for r in rows[i - 4 : i])
+        and rows[i].close > max(r.close for r in rows[i + 1 : i + 5])
     )
 
 
 def future_low_confirmed(rows: list[Row], i: int) -> bool:
     return (
-        i - 5 >= 0
-        and i + 5 < len(rows)
-        and rows[i].close < min(r.close for r in rows[i - 5 : i])
-        and rows[i].close < min(r.close for r in rows[i + 1 : i + 6])
+        i - 4 >= 0
+        and i + 4 < len(rows)
+        and rows[i].close < min(r.close for r in rows[i - 4 : i])
+        and rows[i].close < min(r.close for r in rows[i + 1 : i + 5])
     )
 
 
@@ -382,7 +382,7 @@ def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
                 "index": i,
                 "time": rows[i].datetime,
                 "price": rows[i].close,
-                "confirm_rule": "close[i] < min(close[i-5:i]) and close[i] < min(close[i+1:i+6])",
+                "confirm_rule": "close[i] < min(close[i-4:i]) and close[i] < min(close[i+1:i+5])",
                 "rebound_high_label": None,
                 "rebound_high_index": None,
                 "rebound_high_time": None,
