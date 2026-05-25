@@ -196,6 +196,12 @@ For a custom universe:
 python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2025-10-01 --overlap-days 10 --workers 2
 ```
 
+To download only selected intervals, pass `--fetch-timeframes`:
+
+```bash
+python fetch_sp500_2026_and_mark.py --start 2024-01-01 --fetch-timeframes 1day --workers 2
+```
+
 Off-hours split-adjustment maintenance:
 
 ```bash

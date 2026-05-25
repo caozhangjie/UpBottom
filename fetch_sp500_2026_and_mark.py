@@ -532,43 +532,57 @@ def fetch_symbol(
     provider: str,
     twelve_data_api_key: str | None,
     overlap_days: int,
+    fetch_timeframes: Iterable[str] = TIMEFRAMES,
 ) -> tuple[str, bool, str]:
     try:
+        selected_timeframes = set(fetch_timeframes)
         file_symbol = safe_symbol(symbol)
         daily_path = DATA_ROOT / "1day" / f"{file_symbol}_1day_indicators.csv"
         four_hour_path = DATA_ROOT / "4h" / f"{file_symbol}_4h_indicators.csv"
+        counts: dict[str, int] = {}
         if provider == "twelve-data":
             if not twelve_data_api_key:
                 raise RuntimeError("Missing Twelve Data API key. Set TWELVE_DATA_API_KEY or pass --apikey.")
-            existing_daily = load_rows(daily_path, min_date=start) if daily_path.exists() else []
-            existing_four_hour = load_rows(four_hour_path, min_date=start) if four_hour_path.exists() else []
-            daily = merge_rows(
-                existing_daily,
-                fetch_twelve_data_bars(
-                    symbol,
-                    "1day",
-                    incremental_start(existing_daily, start, overlap_days),
-                    end,
-                    twelve_data_api_key,
-                ),
-            )
-            four_hour = merge_rows(
-                existing_four_hour,
-                fetch_twelve_data_bars(
-                    symbol,
-                    "4h",
-                    incremental_start(existing_four_hour, start, overlap_days),
-                    end,
-                    twelve_data_api_key,
-                ),
-            )
+            if "1day" in selected_timeframes:
+                existing_daily = load_rows(daily_path, min_date=start) if daily_path.exists() else []
+                daily = merge_rows(
+                    existing_daily,
+                    fetch_twelve_data_bars(
+                        symbol,
+                        "1day",
+                        incremental_start(existing_daily, start, overlap_days),
+                        end,
+                        twelve_data_api_key,
+                    ),
+                )
+                write_rows(daily_path, daily)
+                counts["1day"] = len(daily)
+            if "4h" in selected_timeframes:
+                existing_four_hour = load_rows(four_hour_path, min_date=start) if four_hour_path.exists() else []
+                four_hour = merge_rows(
+                    existing_four_hour,
+                    fetch_twelve_data_bars(
+                        symbol,
+                        "4h",
+                        incremental_start(existing_four_hour, start, overlap_days),
+                        end,
+                        twelve_data_api_key,
+                    ),
+                )
+                write_rows(four_hour_path, four_hour)
+                counts["4h"] = len(four_hour)
         else:
-            daily = fetch_yahoo_bars(symbol, "1d", start, end)
-            hourly = fetch_yahoo_bars(symbol, "1h", start, end)
-            four_hour = resample_1h_to_4h(hourly)
-        write_rows(daily_path, daily)
-        write_rows(four_hour_path, four_hour)
-        return symbol, True, f"1day={len(daily)} 4h={len(four_hour)}"
+            if "1day" in selected_timeframes:
+                daily = fetch_yahoo_bars(symbol, "1d", start, end)
+                write_rows(daily_path, daily)
+                counts["1day"] = len(daily)
+            if "4h" in selected_timeframes:
+                hourly = fetch_yahoo_bars(symbol, "1h", start, end)
+                four_hour = resample_1h_to_4h(hourly)
+                write_rows(four_hour_path, four_hour)
+                counts["4h"] = len(four_hour)
+        detail = " ".join(f"{timeframe}={counts[timeframe]}" for timeframe in TIMEFRAMES if timeframe in counts)
+        return symbol, True, detail or "no_timeframes_selected"
     except Exception as exc:
         return symbol, False, str(exc)
 
@@ -1007,6 +1021,13 @@ def parse_args() -> argparse.Namespace:
         help="For incremental updates, re-fetch this many calendar days before the last local bar and merge by timestamp.",
     )
     parser.add_argument(
+        "--fetch-timeframes",
+        nargs="+",
+        choices=TIMEFRAMES,
+        default=list(TIMEFRAMES),
+        help="Timeframes to download. Default downloads both 1day and 4h.",
+    )
+    parser.add_argument(
         "--refresh-metadata",
         action="store_true",
         help="Refresh S&P 500 names and industry metadata instead of using the local metadata cache.",
@@ -1065,7 +1086,8 @@ def main() -> int:
             raise SystemExit("No symbols found. Check --symbols-file or metadata cache.")
         print(
             f"provider={args.provider} universe={args.universe_source} symbols={len(symbols)} start={args.start} "
-            f"end={args.end or 'now'} overlap_days={args.overlap_days}"
+            f"end={args.end or 'now'} overlap_days={args.overlap_days} "
+            f"fetch_timeframes={','.join(args.fetch_timeframes)}"
         )
         ok_count = 0
         failures: list[tuple[str, str]] = []
@@ -1079,6 +1101,7 @@ def main() -> int:
                     args.provider,
                     twelve_data_api_key,
                     args.overlap_days,
+                    args.fetch_timeframes,
                 ): symbol
                 for symbol in symbols
             }
