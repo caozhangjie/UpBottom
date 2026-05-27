@@ -43,7 +43,6 @@ Corporate action guard:
 
 - `fetch_sp500_2026_and_mark.py`: main data/update/scan pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists. PNG charts are optional manual validation output.
 - `ad_structure_v05_core.py`: scanner and structure evaluator.
-- `segment_market_structure.py`: exploratory OHLC segmentation tool for strategy research. It labels `连续上涨` / `连续下跌` / `震荡` and renders manual-review charts.
 - `discord_signal_push.py`: pushes BM-break alerts to Discord with local dedupe cache.
 - `credentials.example.py`: local credential template.
 - `requirements.txt`: cloud/local Python dependencies.
@@ -402,12 +401,3 @@ Render charts for manual validation:
 ```bash
 python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
 ```
-
-Segment one symbol for strategy research:
-
-```bash
-python segment_market_structure.py --symbol MU --timeframe 1day --min-date 2025-01-01 --lookback 8 --trend-atr 1.8
-python segment_market_structure.py --symbol MU --timeframe 4h --min-date 2025-01-01 --lookback 8 --trend-atr 1.8
-```
-
-The segmentation tool combines symmetric price structure and MACD momentum. `连续上涨` and `连续下跌` use mirrored rules: enough ATR movement and efficiency, enough same-direction closes, close near the window extreme, a break/near-break of the recent close ceiling/floor, and DIF/DEA staying in the matching MACD half-axis for enough of the segment. Tune the MACD filter with `--macd-min-atr` and `--macd-side-share`.
