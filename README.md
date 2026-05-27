@@ -270,6 +270,33 @@ All CSVs use the same columns as the existing OHLCV cache:
 datetime,open,high,low,close,volume
 ```
 
+The recommended research flow is on-demand, so you do not need to download 1min/1h data for the whole universe:
+
+```text
+daily data -> find signal-day candidates
+candidate D+1 only -> download 1min bars -> confirm entry
+confirmed entries only -> download later 1min and 1h bars -> backtest exit/anchors
+```
+
+Run the on-demand pipeline:
+
+```bash
+python waterline_on_demand.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/us_1610_2024_01_daily/1day \
+  --data-root /data/UpBottom/data/waterline_on_demand \
+  --output-dir /data/UpBottom/outputs/waterline_on_demand \
+  --start 2024-01-01
+```
+
+This writes:
+
+```text
+waterline_candidates.csv
+waterline_entries.csv
+waterline_trades.csv
+```
+
 ### Waterline Entry Signal
 
 Signal day `D`:

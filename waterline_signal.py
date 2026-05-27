@@ -41,6 +41,24 @@ class WaterlineEntry:
     entry_price: float
 
 
+@dataclass(frozen=True)
+class WaterlineCandidate:
+    symbol: str
+    signal_date: str
+    signal_time: str
+    signal_open: float
+    signal_high: float
+    signal_low: float
+    signal_close: float
+    signal_volume: float
+    prior_volume_avg: float
+    volume_ratio: float
+    candle_k: float
+    trade_date: str
+    trade_time: str
+    trade_close: float
+
+
 def fmt(value: float) -> str:
     return f"{value:.6f}"
 
@@ -147,6 +165,74 @@ def scan_symbol_entries(
             )
         )
     return entries
+
+
+def scan_symbol_candidates(
+    symbol: str,
+    daily_rows: list[Row],
+    volume_lookback: int,
+    volume_multiple: float,
+    candle_k: float,
+) -> list[WaterlineCandidate]:
+    candidates: list[WaterlineCandidate] = []
+    for index in range(volume_lookback, len(daily_rows) - 1):
+        signal_row = daily_rows[index]
+        trade_row = daily_rows[index + 1]
+        prior_rows = daily_rows[index - volume_lookback : index]
+        ok, prior_volume_avg, volume_ratio = is_signal_day(signal_row, prior_rows, volume_multiple, candle_k)
+        if not ok:
+            continue
+        candidates.append(
+            WaterlineCandidate(
+                symbol=symbol,
+                signal_date=signal_row.datetime[:10],
+                signal_time=signal_row.datetime,
+                signal_open=signal_row.open,
+                signal_high=signal_row.high,
+                signal_low=signal_row.low,
+                signal_close=signal_row.close,
+                signal_volume=signal_row.volume,
+                prior_volume_avg=prior_volume_avg,
+                volume_ratio=volume_ratio,
+                candle_k=candle_k,
+                trade_date=trade_row.datetime[:10],
+                trade_time=trade_row.datetime,
+                trade_close=trade_row.close,
+            )
+        )
+    return candidates
+
+
+def confirm_candidate_entry(
+    candidate: WaterlineCandidate,
+    trade_minutes: list[Row],
+    above_ratio_threshold: float,
+    min_minutes: int,
+    minute_timeframe: str,
+) -> WaterlineEntry | None:
+    total, above, ratio = minute_above_ratio(trade_minutes, candidate.signal_close)
+    if total < min_minutes or ratio < above_ratio_threshold:
+        return None
+    return WaterlineEntry(
+        symbol=candidate.symbol,
+        signal_date=candidate.signal_date,
+        signal_time=candidate.signal_time,
+        signal_open=candidate.signal_open,
+        signal_high=candidate.signal_high,
+        signal_low=candidate.signal_low,
+        signal_close=candidate.signal_close,
+        signal_volume=candidate.signal_volume,
+        prior_volume_avg=candidate.prior_volume_avg,
+        volume_ratio=candidate.volume_ratio,
+        candle_k=candidate.candle_k,
+        trade_date=candidate.trade_date,
+        minute_timeframe=minute_timeframe,
+        minute_total=total,
+        minute_above=above,
+        minute_above_ratio=ratio,
+        entry_time=candidate.trade_time,
+        entry_price=candidate.trade_close,
+    )
 
 
 def write_entries(entries: list[WaterlineEntry], output_path: Path) -> None:
