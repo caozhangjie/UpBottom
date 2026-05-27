@@ -44,6 +44,8 @@ Corporate action guard:
 - `fetch_sp500_2026_and_mark.py`: main data/update/scan pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists. PNG charts are optional manual validation output.
 - `ad_structure_v05_core.py`: scanner and structure evaluator.
 - `discord_signal_push.py`: pushes BM-break alerts to Discord with local dedupe cache.
+- `waterline_signal.py`: independent waterline entry-signal scanner. It does not import or modify bottom-divergence recognition logic.
+- `waterline_strategy.py`: independent waterline strategy backtest. It consumes `waterline_signal.py` entries and manages anchors/exits.
 - `credentials.example.py`: local credential template.
 - `requirements.txt`: cloud/local Python dependencies.
 - `symbols.example.csv`: example custom stock universe file.
@@ -246,6 +248,146 @@ Charts are written to:
 
 The scan CSV always writes `/data/UpBottom/outputs/stocks_2025_10/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
 
+## Waterline Strategy
+
+Waterline is a separate research strategy from the bottom-divergence scanner. Keep signal detection and strategy execution separate:
+
+- `waterline_signal.py` finds entry candidates only.
+- `waterline_strategy.py` consumes those candidates and manages holding, anchor updates, and exits.
+- Neither file changes `ad_structure_v05_core.py` or the bottom-divergence scan pipeline.
+
+Required local data layout:
+
+```text
+/data/UpBottom/data/stocks_2025_10/1day/{SYMBOL}_1day_indicators.csv
+/data/UpBottom/data/stocks_2025_10/1min/{SYMBOL}_1min_indicators.csv
+/data/UpBottom/data/stocks_2025_10/1h/{SYMBOL}_1h_indicators.csv
+```
+
+All CSVs use the same columns as the existing OHLCV cache:
+
+```csv
+datetime,open,high,low,close,volume
+```
+
+### Waterline Entry Signal
+
+Signal day `D`:
+
+```text
+close_D > open_D
+close_D - low_D > 1.2 * (high_D - close_D)
+volume_D >= mean(volume of previous 10 trading days) * 2
+```
+
+Trade day is the next trading day `D+1`. The first version uses full-day minute confirmation and buys at the trade-day close:
+
+```text
+waterline = signal_day.close
+above_ratio = count(D+1 minute close > waterline) / count(D+1 minute bars)
+entry if above_ratio >= 0.8
+entry_price = D+1 daily close
+```
+
+Run:
+
+```bash
+python waterline_signal.py --symbols MU
+```
+
+For a custom universe:
+
+```bash
+python waterline_signal.py --symbols-file symbols_us_1610.csv
+```
+
+Output:
+
+```text
+/data/UpBottom/outputs/stocks_2025_10/waterline_entries.csv
+```
+
+Important columns:
+
+```text
+symbol, signal_date, signal_close, volume_ratio, trade_date,
+minute_above_ratio, entry_time, entry_price
+```
+
+### Waterline Strategy
+
+Initial anchor:
+
+```text
+anchor_price = signal_day.close
+```
+
+Daily exit rule after entry:
+
+```text
+below_ratio = count(day minute close < anchor_price) / count(day minute bars)
+exit if below_ratio >= 0.5
+exit_price = that day's daily close
+```
+
+Anchor upgrade uses 1h closes:
+
+```text
+advance_pct = 0.15
+define_bars = 15
+confirm_bars = 30
+```
+
+When 15 consecutive 1h bars define a candidate box:
+
+```text
+box_high = max(close over the 15 bars)
+box_low = min(close over the 15 bars)
+```
+
+The box is eligible only when:
+
+```text
+box_high >= current_anchor * 1.15
+```
+
+Then the next 30 consecutive 1h closes must all stay inside:
+
+```text
+box_low <= close_1h <= box_high
+```
+
+If confirmed:
+
+```text
+anchor_price = box_low
+```
+
+The implementation treats anchors as one-way structural stops: a confirmed `box_low` raises the anchor only when it is above the current anchor. It does not lower an existing anchor.
+
+If a confirmation close breaks below `box_low`, the candidate box fails. If it closes above `box_high`, the stock is treated as continuing higher; the old anchor remains and the strategy keeps looking for a new eligible platform.
+
+Each row in `waterline_entries.csv` is backtested independently in the first version. Position netting and portfolio-level capital allocation are intentionally out of scope.
+
+Run after generating entries:
+
+```bash
+python waterline_strategy.py
+```
+
+Output:
+
+```text
+/data/UpBottom/outputs/stocks_2025_10/waterline_trades.csv
+```
+
+Important columns:
+
+```text
+symbol, trade_date, entry_price, initial_anchor, final_anchor,
+anchor_updates, exit_date, exit_price, exit_below_ratio, return_pct, status
+```
+
 ## Discord Alerts
 
 After the scan, push alerts:
@@ -368,6 +510,8 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 /data/UpBottom/outputs/stocks_2025_10/split_jump_repairs.csv
 /data/UpBottom/outputs/stocks_2025_10/discord_push_cache.json
 /data/UpBottom/outputs/stocks_2025_10/charts/    # only when --render-charts is used
+/data/UpBottom/outputs/stocks_2025_10/waterline_entries.csv
+/data/UpBottom/outputs/stocks_2025_10/waterline_trades.csv
 ```
 
 ## Useful Commands
@@ -400,4 +544,11 @@ Render charts for manual validation:
 
 ```bash
 python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
+```
+
+Run waterline entry scan and strategy backtest:
+
+```bash
+python waterline_signal.py --symbols MU
+python waterline_strategy.py
 ```
