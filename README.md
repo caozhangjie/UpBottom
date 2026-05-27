@@ -435,6 +435,17 @@ Preview without sending:
 python discord_signal_push.py --timeframe 4h --dry-run
 ```
 
+Large alert batches are split into Discord chunks. Runtime logs include:
+
+```text
+discord_chunks=N
+discord_sending chunk=1/N alerts=M bytes=B symbols=...
+discord_sent chunk=1/N http_status=204 pushed_so_far=M cache=...
+discord_post_failed attempt=1/5 ...
+```
+
+Each successfully sent chunk is written to the dedupe cache immediately. If a later chunk fails after retries, the next run only retries the unsent alerts.
+
 Force resend:
 
 ```bash

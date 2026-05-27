@@ -14,6 +14,8 @@ import argparse
 import csv
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -128,36 +130,89 @@ def format_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> st
     )
 
 
-def chunk_messages(messages: Iterable[str], limit: int = 1800) -> list[str]:
-    chunks: list[str] = []
+def chunk_alerts(
+    rows: Iterable[dict[str, str]],
+    metadata: dict[str, dict[str, str]],
+    header: str,
+    limit: int = 1800,
+) -> list[tuple[str, list[dict[str, str]]]]:
+    chunks: list[tuple[str, list[dict[str, str]]]] = []
     current = ""
-    for message in messages:
-        item = message.strip()
+    current_rows: list[dict[str, str]] = []
+    for row in rows:
+        item = format_alert(row, metadata).strip()
         if not item:
             continue
         separator = "\n\n---\n\n"
-        if current and len(current) + len(separator) + len(item) > limit:
-            chunks.append(current)
+        next_length = len(header) + 2 + len(current) + len(separator) + len(item)
+        if current and next_length > limit:
+            chunks.append((f"{header}\n\n{current}", current_rows))
             current = item
+            current_rows = [row]
         elif current:
             current += separator + item
+            current_rows.append(row)
         else:
             current = item
+            current_rows = [row]
     if current:
-        chunks.append(current)
+        chunks.append((f"{header}\n\n{current}", current_rows))
     return chunks
 
 
-def post_discord(webhook_url: str, content: str) -> None:
+def post_discord(webhook_url: str, content: str, max_attempts: int = 5) -> int:
     payload = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "UpBottom/1.0"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        response.read()
+    for attempt in range(1, max_attempts + 1):
+        request = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "UpBottom/1.0"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read()
+                return int(getattr(response, "status", 0) or response.getcode())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            wait = min(2 ** attempt, 60)
+            if exc.code == 429:
+                try:
+                    wait = max(float(json.loads(body).get("retry_after", wait)), 1.0)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    wait = max(wait, 5)
+            print(
+                f"discord_post_failed attempt={attempt}/{max_attempts} "
+                f"http_status={exc.code} wait_seconds={wait:.1f} body={body[:300]}",
+                flush=True,
+            )
+            if attempt == max_attempts:
+                raise
+            time.sleep(wait)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            wait = min(2 ** attempt, 30)
+            print(
+                f"discord_post_failed attempt={attempt}/{max_attempts} "
+                f"error={type(exc).__name__}: {exc} wait_seconds={wait}",
+                flush=True,
+            )
+            if attempt == max_attempts:
+                raise
+            time.sleep(wait)
+    raise RuntimeError("Discord post failed without a captured exception.")
+
+
+def mark_sent(sent: dict, rows: list[dict[str, str]], chunk_index: int) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    for row in rows:
+        sent[alert_key(row)] = {
+            "sent_at": now,
+            "chunk_index": chunk_index,
+            "symbol": row.get("symbol", ""),
+            "timeframe": row.get("timeframe", ""),
+            "BM_break_time": row.get("BM_break_time", ""),
+            "structure_status": row.get("structure_status", ""),
+        }
 
 
 def parse_args() -> argparse.Namespace:
@@ -196,34 +251,49 @@ def main() -> int:
     candidates = [row for row in rows if is_push_candidate(row, args.timeframe)]
     pending = [row for row in candidates if args.force or alert_key(row) not in sent]
 
-    print(f"timeframe={args.timeframe} candidates={len(candidates)} pending={len(pending)} force={args.force}")
+    print(
+        f"timeframe={args.timeframe} candidates={len(candidates)} "
+        f"pending={len(pending)} force={args.force} signals={args.signals} cache={args.cache}",
+        flush=True,
+    )
     if not pending:
         return 0
 
     header = f"【UpBottom 底背离提醒】{args.timeframe}，新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    messages = [f"{header}\n\n{format_alert(row, metadata)}" for row in pending]
-    chunks = chunk_messages(messages)
+    chunks = chunk_alerts(pending, metadata, header)
+    print(f"discord_chunks={len(chunks)}", flush=True)
     if args.dry_run:
-        for chunk in chunks:
+        for index, (chunk, chunk_rows) in enumerate(chunks, start=1):
+            symbols = ",".join(row.get("symbol", "") for row in chunk_rows)
+            print(f"\n--- dry_run_chunk={index}/{len(chunks)} alerts={len(chunk_rows)} symbols={symbols} ---")
             print("\n" + chunk + "\n")
         return 0
     if not webhook_url:
         raise SystemExit("Missing Discord webhook URL. Set DISCORD_WEBHOOK_URL or credentials.DISCORD_WEBHOOK_URL.")
 
-    for chunk in chunks:
-        post_discord(webhook_url, chunk)
+    pushed = 0
+    for index, (chunk, chunk_rows) in enumerate(chunks, start=1):
+        symbols = ",".join(row.get("symbol", "") for row in chunk_rows[:12])
+        if len(chunk_rows) > 12:
+            symbols += ",..."
+        print(
+            f"discord_sending chunk={index}/{len(chunks)} alerts={len(chunk_rows)} "
+            f"bytes={len(chunk.encode('utf-8'))} symbols={symbols}",
+            flush=True,
+        )
+        status = post_discord(webhook_url, chunk)
+        mark_sent(sent, chunk_rows, index)
+        save_cache(args.cache, cache)
+        pushed += len(chunk_rows)
+        print(
+            f"discord_sent chunk={index}/{len(chunks)} http_status={status} "
+            f"pushed_so_far={pushed} cache={args.cache}",
+            flush=True,
+        )
+        if index < len(chunks):
+            time.sleep(1)
 
-    now = datetime.now().isoformat(timespec="seconds")
-    for row in pending:
-        sent[alert_key(row)] = {
-            "sent_at": now,
-            "symbol": row.get("symbol", ""),
-            "timeframe": row.get("timeframe", ""),
-            "BM_break_time": row.get("BM_break_time", ""),
-            "structure_status": row.get("structure_status", ""),
-        }
-    save_cache(args.cache, cache)
-    print(f"pushed={len(pending)} cache={args.cache}")
+    print(f"pushed={pushed} cache={args.cache}", flush=True)
     return 0
 
 
