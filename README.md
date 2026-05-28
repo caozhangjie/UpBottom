@@ -278,6 +278,8 @@ candidate D+1 only -> download 1min bars -> confirm entry
 confirmed entries only -> download later 1min and 1h bars -> backtest exit/anchors
 ```
 
+`waterline_on_demand.py` processes symbols concurrently with `--workers`, but each symbol is handled in chronological order. If a later signal falls inside the same symbol's active holding period, that signal is skipped. This keeps per-symbol trades non-overlapping while still allowing multiple symbols to run in parallel.
+
 Run the on-demand pipeline:
 
 ```bash
@@ -289,12 +291,26 @@ python waterline_on_demand.py \
   --start 2024-01-01
 ```
 
+For a smaller first pass, limit the symbol set:
+
+```bash
+python waterline_on_demand.py \
+  --symbols AAPL MSFT NVDA \
+  --daily-dir /data/UpBottom/data/us_1610_2024_01_daily/1day \
+  --data-root /data/UpBottom/data/waterline_on_demand \
+  --output-dir /data/UpBottom/outputs/waterline_on_demand_smoke \
+  --start 2025-01-01 \
+  --end 2026-07-01 \
+  --workers 2
+```
+
 This writes:
 
 ```text
 waterline_candidates.csv
 waterline_entries.csv
 waterline_trades.csv
+waterline_half_year_summary.csv
 ```
 
 ### Waterline Entry Signal
