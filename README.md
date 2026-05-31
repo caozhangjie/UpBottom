@@ -626,3 +626,20 @@ Run waterline entry scan and strategy backtest:
 python waterline_signal.py --symbols MU
 python waterline_strategy.py
 ```
+
+Run shared-exit strategy backtests for bottom divergence and waterline:
+
+```bash
+python strategy_backtest.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/stocks_2025_10/1day \
+  --data-root /data/UpBottom/data/stocks_2025_10 \
+  --output-dir /data/UpBottom/outputs/stocks_2025_10 \
+  --start 2024-01-01 \
+  --strategy both
+```
+
+This keeps alert delivery separate from trading research. Bottom divergence buys at `D_TRIGGERED`
+close. Waterline buys at the confirmed trade-day close. Both strategies sell when at least 50%
+of a day's minute closes are below either the previous 5 completed daily closes' moving average
+or the strategy reference close.
