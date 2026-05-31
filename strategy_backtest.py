@@ -139,6 +139,12 @@ def load_optional_rows(path: Path, min_date: str) -> list[Row]:
     return load_rows(path, min_date=min_date) if path.exists() else []
 
 
+def cached_rows_for_date(path: Path, date_text: str) -> list[Row]:
+    if not path.exists():
+        return []
+    return [row for row in load_rows(path, min_date=date_text) if row.datetime[:10] == date_text]
+
+
 def source_symbols_from_file(path: Path | None) -> dict[str, str]:
     if path is None or not path.exists():
         return {}
@@ -372,7 +378,13 @@ def process_symbol(
             if blocked_until is not None and entry_dt <= blocked_until:
                 stats["bottom_skipped_in_position"] += 1
                 continue
-            minute_rows = get_minute_rows(symbol, source_symbol, entry.entry_date, args, api_key)
+            try:
+                minute_rows = get_minute_rows(symbol, source_symbol, entry.entry_date, args, api_key)
+            except Exception as exc:
+                stats["bottom_fetch_failed"] += 1
+                if args.verbose:
+                    print(f"bottom_fetch_failed symbol={symbol} entry_date={entry.entry_date} error={exc}", flush=True)
+                continue
             trade = backtest_shared_exit(
                 "bottom_divergence",
                 symbol,
@@ -402,12 +414,27 @@ def process_symbol(
             if blocked_until is not None and trade_dt <= blocked_until:
                 stats["waterline_skipped_in_position"] += 1
                 continue
-            trade_minutes = get_trade_day_minutes(symbol, source_symbol, candidate, args, api_key)
+            try:
+                trade_minutes = get_trade_day_minutes(symbol, source_symbol, candidate, args, api_key)
+            except Exception as exc:
+                stats["waterline_fetch_failed"] += 1
+                if args.verbose:
+                    print(
+                        f"waterline_fetch_failed symbol={symbol} trade_date={candidate.trade_date} error={exc}",
+                        flush=True,
+                    )
+                continue
             entry = confirm_candidate_entry(candidate, trade_minutes, args.above_ratio, args.min_entry_minutes, "1min")
             if not entry:
                 stats["waterline_entry_rejected"] += 1
                 continue
-            minute_rows = get_minute_rows(symbol, source_symbol, entry.trade_date, args, api_key)
+            try:
+                minute_rows = get_minute_rows(symbol, source_symbol, entry.trade_date, args, api_key)
+            except Exception as exc:
+                stats["waterline_fetch_failed"] += 1
+                if args.verbose:
+                    print(f"waterline_exit_fetch_failed symbol={symbol} entry_date={entry.trade_date} error={exc}", flush=True)
+                continue
             trade = backtest_shared_exit(
                 "waterline",
                 symbol,
@@ -437,6 +464,9 @@ def get_trade_day_minutes(
     args: argparse.Namespace,
     api_key: str | None,
 ) -> list[Row]:
+    cached = cached_rows_for_date(args.data_root / "1min" / f"{symbol}_1min_indicators.csv", candidate.trade_date)
+    if len(cached) >= args.min_entry_minutes:
+        return cached
     if args.skip_download:
         minute_rows = load_optional_rows(args.data_root / "1min" / f"{symbol}_1min_indicators.csv", min_date=candidate.trade_date)
     else:

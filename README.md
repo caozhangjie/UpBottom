@@ -449,7 +449,14 @@ symbol, trade_date, entry_price, initial_anchor, final_anchor,
 anchor_updates, exit_date, exit_price, exit_below_ratio, return_pct, status
 ```
 
-## Discord Alerts
+## Alerts
+
+Alert delivery is intentionally separate from strategy backtesting:
+
+- Alert scripts only read scanner output such as `ad_signals.csv`, format structure progress, and send notifications.
+- Alert scripts do not calculate entries, exits, returns, position state, or portfolio statistics.
+- Strategy backtests read signal/price data and write research CSVs. They do not send Discord or Feishu messages.
+- Keep operational alert dedupe caches separate from research trade outputs.
 
 After the scan, push alerts:
 
@@ -458,6 +465,15 @@ python discord_signal_push.py --timeframe 4h
 python discord_signal_push.py --timeframe 1day
 python discord_signal_push.py --timeframe 1day --target feishu
 python discord_signal_push.py --timeframe 1day --target both
+```
+
+`--target discord` is the default. Use `--target both` on the server when you want Discord and Feishu to receive the same alert batch.
+
+Server credentials can be configured in `credentials.py` or environment variables:
+
+```python
+DISCORD_WEBHOOK_URL = "your_discord_webhook_url"
+FEISHU_WEBHOOK_URL = "your_feishu_webhook_url"
 ```
 
 Candidate rule:
@@ -490,7 +506,7 @@ Alert messages include stock ID, English name, sector/sub-industry, structure po
 已经二次突破
 ```
 
-Chinese stock names are not included in Discord alerts.
+Chinese stock names are not included in alert messages.
 
 Preview without sending:
 
@@ -498,7 +514,7 @@ Preview without sending:
 python discord_signal_push.py --timeframe 4h --dry-run
 ```
 
-Large alert batches are split into Discord chunks. Runtime logs include:
+Large alert batches are split into message chunks. Runtime logs include:
 
 ```text
 discord_chunks=N
@@ -507,7 +523,7 @@ discord_sent chunk=1/N http_status=204 pushed_so_far=M cache=...
 discord_post_failed attempt=1/5 ...
 ```
 
-Each successfully sent chunk is written to the dedupe cache immediately. If a later chunk fails after retries, the next run only retries the unsent alerts.
+Feishu runs use the same flow with `feishu_*` log prefixes. Each successfully sent chunk is written to the dedupe cache immediately. If a later chunk fails after retries, the next run only retries the unsent alerts for that target.
 
 Force resend:
 
@@ -515,10 +531,46 @@ Force resend:
 python discord_signal_push.py --timeframe 4h --force
 ```
 
-Clear the Discord dedupe cache without sending alerts:
+Clear the alert dedupe cache without sending alerts:
 
 ```bash
 python discord_signal_push.py --clear-cache
+```
+
+## Strategy Backtests
+
+Backtests are research-only and live outside the alert delivery path.
+
+Current shared-exit backtest:
+
+- Bottom divergence buys at `D_TRIGGERED` close. `D_TRIGGERED` still means the first close strictly above `CM_price`.
+- Waterline buys at the confirmed trade-day close after the existing waterline signal and minute confirmation.
+- Both strategies sell when at least 50% of a day's minute closes are below either the previous 5 completed daily closes' moving average or the strategy reference close.
+- Bottom divergence reference close is the D-point entry close. Waterline reference close is the signal-day close.
+- Half-year summaries group trades by entry date.
+
+The implementation is in `strategy_backtest.py`. It caches 1min bars under the selected `--data-root`, reuses cached trade-day minute bars before making new API calls, and skips individual fetch failures instead of aborting the whole batch.
+
+Run both strategies:
+
+```bash
+python strategy_backtest.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/stocks_2025_10/1day \
+  --data-root /data/UpBottom/data/stocks_2025_10 \
+  --output-dir /data/UpBottom/outputs/stocks_2025_10 \
+  --start 2024-01-01 \
+  --strategy both \
+  --workers 2
+```
+
+Outputs:
+
+```text
+bottom_divergence_trades.csv
+bottom_divergence_half_year_summary.csv
+waterline_ma5_trades.csv
+waterline_ma5_half_year_summary.csv
 ```
 
 ## Full Automation
@@ -626,20 +678,3 @@ Run waterline entry scan and strategy backtest:
 python waterline_signal.py --symbols MU
 python waterline_strategy.py
 ```
-
-Run shared-exit strategy backtests for bottom divergence and waterline:
-
-```bash
-python strategy_backtest.py \
-  --symbols-file symbols_us_1610.csv \
-  --daily-dir /data/UpBottom/data/stocks_2025_10/1day \
-  --data-root /data/UpBottom/data/stocks_2025_10 \
-  --output-dir /data/UpBottom/outputs/stocks_2025_10 \
-  --start 2024-01-01 \
-  --strategy both
-```
-
-This keeps alert delivery separate from trading research. Bottom divergence buys at `D_TRIGGERED`
-close. Waterline buys at the confirmed trade-day close. Both strategies sell when at least 50%
-of a day's minute closes are below either the previous 5 completed daily closes' moving average
-or the strategy reference close.
