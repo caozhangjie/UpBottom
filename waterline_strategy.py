@@ -34,6 +34,8 @@ class WaterlineTrade:
     exit_price: float
     exit_anchor: float
     exit_below_ratio: float
+    exit_rule: str
+    exit_reference_price: float
     return_pct: float
     holding_days: int
     status: str
@@ -77,6 +79,17 @@ def below_ratio(rows: list[Row], anchor: float) -> tuple[int, int, float]:
     below = sum(1 for row in rows if row.close < anchor)
     ratio = below / total if total else 0.0
     return total, below, ratio
+
+
+def prior_ma_by_date(rows: list[Row], window: int) -> dict[str, float]:
+    out: dict[str, float] = {}
+    prior_closes: list[float] = []
+    for row in rows:
+        date_text = row.datetime[:10]
+        if len(prior_closes) >= window:
+            out[date_text] = sum(prior_closes[-window:]) / window
+        prior_closes.append(row.close)
+    return out
 
 
 def update_anchor_with_hourly_bar(
@@ -155,6 +168,8 @@ def backtest_entry(
     advance_pct: float,
     define_bars: int,
     confirm_bars: int,
+    exit_rule: str = "anchor",
+    ma_window: int = 5,
 ) -> WaterlineTrade:
     symbol = entry["symbol"]
     signal_date = entry["signal_date"]
@@ -167,14 +182,36 @@ def backtest_entry(
     daily_by_date = daily_close_by_date(daily_rows)
     minute_by_date = rows_by_date(minute_rows)
     hourly_by_date = rows_by_date(hourly_rows)
+    prior_ma5_by_date = prior_ma_by_date(daily_rows, ma_window)
     dates = sorted(date for date in daily_by_date if date > trade_date)
     for holding_index, date_text in enumerate(dates, start=1):
         update_anchor_for_day(anchor_state, hourly_by_date.get(date_text, []), advance_pct, define_bars, confirm_bars)
         day_minutes = minute_by_date.get(date_text, [])
         if not day_minutes:
             continue
-        _, _, ratio = below_ratio(day_minutes, anchor_state.anchor)
-        if ratio >= exit_below_ratio:
+        exit_reason = ""
+        exit_reference_price = anchor_state.anchor
+        ratio = 0.0
+        if exit_rule == "ma5-or-signal":
+            ma_price = prior_ma5_by_date.get(date_text)
+            ma_ratio = 0.0
+            if ma_price is not None:
+                _, _, ma_ratio = below_ratio(day_minutes, ma_price)
+            _, _, signal_ratio = below_ratio(day_minutes, initial_anchor)
+            if ma_ratio >= exit_below_ratio:
+                exit_reason = f"MA{ma_window}"
+                exit_reference_price = ma_price if ma_price is not None else 0.0
+                ratio = ma_ratio
+            elif signal_ratio >= exit_below_ratio:
+                exit_reason = "SIGNAL_CLOSE"
+                exit_reference_price = initial_anchor
+                ratio = signal_ratio
+        else:
+            _, _, ratio = below_ratio(day_minutes, anchor_state.anchor)
+            if ratio >= exit_below_ratio:
+                exit_reason = "ANCHOR"
+
+        if exit_reason:
             exit_row = daily_by_date[date_text]
             return WaterlineTrade(
                 symbol=symbol,
@@ -190,6 +227,8 @@ def backtest_entry(
                 exit_price=exit_row.close,
                 exit_anchor=anchor_state.anchor,
                 exit_below_ratio=ratio,
+                exit_rule=exit_reason,
+                exit_reference_price=exit_reference_price,
                 return_pct=(exit_row.close / entry_price - 1) * 100,
                 holding_days=holding_index,
                 status="EXITED",
@@ -212,6 +251,8 @@ def backtest_entry(
         exit_price=0.0,
         exit_anchor=anchor_state.anchor,
         exit_below_ratio=0.0,
+        exit_rule="",
+        exit_reference_price=0.0,
         return_pct=(last_price / entry_price - 1) * 100,
         holding_days=len(dates),
         status="OPEN",
@@ -241,6 +282,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minute-timeframe", default="1min")
     parser.add_argument("--hourly-timeframe", default="1h")
     parser.add_argument("--exit-below-ratio", type=float, default=0.5)
+    parser.add_argument("--exit-rule", choices=["anchor", "ma5-or-signal"], default="anchor")
+    parser.add_argument("--ma-window", type=int, default=5)
     parser.add_argument("--advance-pct", type=float, default=0.15)
     parser.add_argument("--define-bars", type=int, default=15)
     parser.add_argument("--confirm-bars", type=int, default=30)
@@ -272,6 +315,8 @@ def main() -> int:
                 args.advance_pct,
                 args.define_bars,
                 args.confirm_bars,
+                args.exit_rule,
+                args.ma_window,
             )
         )
 

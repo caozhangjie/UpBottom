@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import os
+import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -34,6 +37,11 @@ try:
     from credentials import DISCORD_WEBHOOK_URL as CREDENTIALS_DISCORD_WEBHOOK_URL
 except ImportError:
     CREDENTIALS_DISCORD_WEBHOOK_URL = ""
+
+try:
+    from credentials import FEISHU_WEBHOOK_URL as CREDENTIALS_FEISHU_WEBHOOK_URL
+except ImportError:
+    CREDENTIALS_FEISHU_WEBHOOK_URL = ""
 
 def load_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
@@ -74,6 +82,13 @@ def alert_key(row: dict[str, str]) -> str:
             row.get("BM_break_time", ""),
         ]
     )
+
+
+def delivery_key(target: str, row: dict[str, str]) -> str:
+    key = alert_key(row)
+    if target == "discord":
+        return key
+    return f"{target}|{key}"
 
 
 def is_push_candidate(row: dict[str, str], timeframe: str) -> bool:
@@ -134,7 +149,7 @@ def chunk_alerts(
     rows: Iterable[dict[str, str]],
     metadata: dict[str, dict[str, str]],
     header: str,
-    limit: int = 1800,
+    limit: int = 1500,
 ) -> list[tuple[str, list[dict[str, str]]]]:
     chunks: list[tuple[str, list[dict[str, str]]]] = []
     current = ""
@@ -160,7 +175,7 @@ def chunk_alerts(
     return chunks
 
 
-def post_discord(webhook_url: str, content: str, max_attempts: int = 5) -> int:
+def post_discord(webhook_url: str, content: str, max_attempts: int = 8, timeout: int = 60) -> int:
     payload = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
     for attempt in range(1, max_attempts + 1):
         request = urllib.request.Request(
@@ -170,7 +185,7 @@ def post_discord(webhook_url: str, content: str, max_attempts: int = 5) -> int:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 response.read()
                 return int(getattr(response, "status", 0) or response.getcode())
         except urllib.error.HTTPError as exc:
@@ -189,8 +204,16 @@ def post_discord(webhook_url: str, content: str, max_attempts: int = 5) -> int:
             if attempt == max_attempts:
                 raise
             time.sleep(wait)
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-            wait = min(2 ** attempt, 30)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            http.client.IncompleteRead,
+            socket.timeout,
+            ssl.SSLError,
+        ) as exc:
+            wait = min(2 ** attempt, 60)
             print(
                 f"discord_post_failed attempt={attempt}/{max_attempts} "
                 f"error={type(exc).__name__}: {exc} wait_seconds={wait}",
@@ -202,11 +225,66 @@ def post_discord(webhook_url: str, content: str, max_attempts: int = 5) -> int:
     raise RuntimeError("Discord post failed without a captured exception.")
 
 
-def mark_sent(sent: dict, rows: list[dict[str, str]], chunk_index: int) -> None:
+def post_feishu(webhook_url: str, content: str, max_attempts: int = 8, timeout: int = 60) -> int:
+    payload = json.dumps({"msg_type": "text", "content": {"text": content}}, ensure_ascii=False).encode("utf-8")
+    for attempt in range(1, max_attempts + 1):
+        request = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "UpBottom/1.0"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                status = int(getattr(response, "status", 0) or response.getcode())
+                try:
+                    result = json.loads(body) if body else {}
+                except json.JSONDecodeError:
+                    result = {}
+                code = result.get("code", result.get("StatusCode", result.get("status_code", 0)))
+                if status >= 400 or code not in (0, "0", None):
+                    raise RuntimeError(f"Feishu webhook returned status={status} body={body[:300]}")
+                return status
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            wait = min(2 ** attempt, 60)
+            print(
+                f"feishu_post_failed attempt={attempt}/{max_attempts} "
+                f"http_status={exc.code} wait_seconds={wait:.1f} body={body[:300]}",
+                flush=True,
+            )
+            if attempt == max_attempts:
+                raise
+            time.sleep(wait)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            http.client.IncompleteRead,
+            socket.timeout,
+            ssl.SSLError,
+            RuntimeError,
+        ) as exc:
+            wait = min(2 ** attempt, 60)
+            print(
+                f"feishu_post_failed attempt={attempt}/{max_attempts} "
+                f"error={type(exc).__name__}: {exc} wait_seconds={wait}",
+                flush=True,
+            )
+            if attempt == max_attempts:
+                raise
+            time.sleep(wait)
+    raise RuntimeError("Feishu post failed without a captured exception.")
+
+
+def mark_sent(target: str, sent: dict, rows: list[dict[str, str]], chunk_index: int) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
-        sent[alert_key(row)] = {
+        sent[delivery_key(target, row)] = {
             "sent_at": now,
+            "target": target,
             "chunk_index": chunk_index,
             "symbol": row.get("symbol", ""),
             "timeframe": row.get("timeframe", ""),
@@ -222,11 +300,72 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metadata", type=Path, default=default_metadata_path())
     parser.add_argument("--cache", type=Path, default=CACHE_PATH)
     parser.add_argument("--webhook-url", default=None)
+    parser.add_argument("--feishu-webhook-url", default=None)
+    parser.add_argument("--target", choices=["discord", "feishu", "both"], default="discord")
     parser.add_argument("--refresh-metadata", action="store_true", help="Refresh S&P 500 names and industry metadata.")
     parser.add_argument("--force", action="store_true", help="Push alerts even if they were already sent.")
     parser.add_argument("--clear-cache", action="store_true", help="Clear the Discord dedupe cache and exit.")
     parser.add_argument("--dry-run", action="store_true", help="Print alerts without sending or updating cache.")
+    parser.add_argument("--chunk-limit", type=int, default=1500, help="Maximum characters per Discord message chunk.")
+    parser.add_argument("--post-timeout", type=int, default=60, help="HTTP timeout seconds for each Discord request.")
+    parser.add_argument("--max-attempts", type=int, default=8, help="Retry attempts for each Discord message chunk.")
+    parser.add_argument("--chunk-delay", type=float, default=2.0, help="Delay seconds between Discord message chunks.")
+    parser.add_argument(
+        "--stop-on-error",
+        action="store_true",
+        help="Stop immediately when a chunk fails after all retries. By default later chunks continue.",
+    )
     return parser.parse_args()
+
+
+def send_chunks(
+    target: str,
+    webhook_url: str,
+    chunks: list[tuple[str, list[dict[str, str]]]],
+    args: argparse.Namespace,
+    cache: dict,
+    sent: dict,
+) -> tuple[int, list[tuple[str, int, str, str]]]:
+    pushed = 0
+    failed_chunks: list[tuple[str, int, str, str]] = []
+    for index, (chunk, chunk_rows) in enumerate(chunks, start=1):
+        symbols = ",".join(row.get("symbol", "") for row in chunk_rows[:12])
+        if len(chunk_rows) > 12:
+            symbols += ",..."
+        print(
+            f"{target}_sending chunk={index}/{len(chunks)} alerts={len(chunk_rows)} "
+            f"bytes={len(chunk.encode('utf-8'))} symbols={symbols}",
+            flush=True,
+        )
+        try:
+            if target == "discord":
+                status = post_discord(webhook_url, chunk, max_attempts=args.max_attempts, timeout=args.post_timeout)
+            else:
+                status = post_feishu(webhook_url, chunk, max_attempts=args.max_attempts, timeout=args.post_timeout)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            failed_chunks.append((target, index, symbols, message))
+            print(
+                f"{target}_chunk_failed chunk={index}/{len(chunks)} alerts={len(chunk_rows)} "
+                f"symbols={symbols} error={message}",
+                flush=True,
+            )
+            if args.stop_on_error:
+                raise
+            if index < len(chunks):
+                time.sleep(args.chunk_delay)
+            continue
+        mark_sent(target, sent, chunk_rows, index)
+        save_cache(args.cache, cache)
+        pushed += len(chunk_rows)
+        print(
+            f"{target}_sent chunk={index}/{len(chunks)} http_status={status} "
+            f"pushed_so_far={pushed} cache={args.cache}",
+            flush=True,
+        )
+        if index < len(chunks):
+            time.sleep(args.chunk_delay)
+    return pushed, failed_chunks
 
 
 def main() -> int:
@@ -236,7 +375,12 @@ def main() -> int:
         print(f"cache_cleared={args.cache}")
         return 0
 
-    webhook_url = args.webhook_url or os.environ.get("DISCORD_WEBHOOK_URL") or CREDENTIALS_DISCORD_WEBHOOK_URL
+    discord_webhook_url = args.webhook_url or os.environ.get("DISCORD_WEBHOOK_URL") or CREDENTIALS_DISCORD_WEBHOOK_URL
+    feishu_webhook_url = (
+        args.feishu_webhook_url
+        or os.environ.get("FEISHU_WEBHOOK_URL")
+        or CREDENTIALS_FEISHU_WEBHOOK_URL
+    )
     if args.refresh_metadata or not args.metadata.exists():
         try:
             from fetch_sp500_2026_and_mark import get_sp500_metadata, write_metadata_csv
@@ -249,51 +393,62 @@ def main() -> int:
     cache = load_cache(args.cache)
     sent = cache.setdefault("sent", {})
     candidates = [row for row in rows if is_push_candidate(row, args.timeframe)]
-    pending = [row for row in candidates if args.force or alert_key(row) not in sent]
+    targets = ["discord", "feishu"] if args.target == "both" else [args.target]
+    pending_by_target = {
+        target: [row for row in candidates if args.force or delivery_key(target, row) not in sent]
+        for target in targets
+    }
+    pending_count = sum(len(rows) for rows in pending_by_target.values())
 
     print(
         f"timeframe={args.timeframe} candidates={len(candidates)} "
-        f"pending={len(pending)} force={args.force} signals={args.signals} cache={args.cache}",
+        f"pending={pending_count} target={args.target} force={args.force} signals={args.signals} cache={args.cache}",
         flush=True,
     )
-    if not pending:
+    if not pending_count:
         return 0
 
-    header = f"【UpBottom 底背离提醒】{args.timeframe}，新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    chunks = chunk_alerts(pending, metadata, header)
-    print(f"discord_chunks={len(chunks)}", flush=True)
     if args.dry_run:
-        for index, (chunk, chunk_rows) in enumerate(chunks, start=1):
-            symbols = ",".join(row.get("symbol", "") for row in chunk_rows)
-            print(f"\n--- dry_run_chunk={index}/{len(chunks)} alerts={len(chunk_rows)} symbols={symbols} ---")
-            print("\n" + chunk + "\n")
+        for target in targets:
+            pending = pending_by_target[target]
+            header = f"【UpBottom 底背离提醒】{args.timeframe}，{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            chunks = chunk_alerts(pending, metadata, header, limit=args.chunk_limit)
+            print(f"{target}_chunks={len(chunks)}", flush=True)
+            for index, (chunk, chunk_rows) in enumerate(chunks, start=1):
+                symbols = ",".join(row.get("symbol", "") for row in chunk_rows)
+                print(f"\n--- dry_run_target={target} chunk={index}/{len(chunks)} alerts={len(chunk_rows)} symbols={symbols} ---")
+                print("\n" + chunk + "\n")
         return 0
-    if not webhook_url:
+    if "discord" in targets and not discord_webhook_url:
         raise SystemExit("Missing Discord webhook URL. Set DISCORD_WEBHOOK_URL or credentials.DISCORD_WEBHOOK_URL.")
+    if "feishu" in targets and not feishu_webhook_url:
+        raise SystemExit("Missing Feishu webhook URL. Set FEISHU_WEBHOOK_URL or credentials.FEISHU_WEBHOOK_URL.")
 
-    pushed = 0
-    for index, (chunk, chunk_rows) in enumerate(chunks, start=1):
-        symbols = ",".join(row.get("symbol", "") for row in chunk_rows[:12])
-        if len(chunk_rows) > 12:
-            symbols += ",..."
-        print(
-            f"discord_sending chunk={index}/{len(chunks)} alerts={len(chunk_rows)} "
-            f"bytes={len(chunk.encode('utf-8'))} symbols={symbols}",
-            flush=True,
-        )
-        status = post_discord(webhook_url, chunk)
-        mark_sent(sent, chunk_rows, index)
-        save_cache(args.cache, cache)
-        pushed += len(chunk_rows)
-        print(
-            f"discord_sent chunk={index}/{len(chunks)} http_status={status} "
-            f"pushed_so_far={pushed} cache={args.cache}",
-            flush=True,
-        )
-        if index < len(chunks):
-            time.sleep(1)
+    pushed_total = 0
+    failed_chunks: list[tuple[str, int, str, str]] = []
+    webhook_by_target = {"discord": discord_webhook_url, "feishu": feishu_webhook_url}
+    for target in targets:
+        pending = pending_by_target[target]
+        if not pending:
+            print(f"{target}_pending=0", flush=True)
+            continue
+        header = f"【UpBottom 底背离提醒】{args.timeframe}，{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        chunks = chunk_alerts(pending, metadata, header, limit=args.chunk_limit)
+        print(f"{target}_chunks={len(chunks)}", flush=True)
+        pushed, failures = send_chunks(target, webhook_by_target[target], chunks, args, cache, sent)
+        pushed_total += pushed
+        failed_chunks.extend(failures)
 
-    print(f"pushed={pushed} cache={args.cache}", flush=True)
+    if failed_chunks:
+        failures_path = args.cache.with_name("discord_push_failures.csv")
+        with failures_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["target", "chunk", "symbols", "error"])
+            writer.writerows(failed_chunks)
+        print(f"pushed={pushed_total} failed_chunks={len(failed_chunks)} failures={failures_path} cache={args.cache}", flush=True)
+        return 2
+
+    print(f"pushed={pushed_total} failed_chunks=0 cache={args.cache}", flush=True)
     return 0
 
 

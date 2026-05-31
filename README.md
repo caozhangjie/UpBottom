@@ -73,6 +73,7 @@ Copy your private `credentials.py` into the project root on the cloud machine:
 ```python
 TWELVE_DATA_API_KEY = "your_twelve_data_api_key"
 DISCORD_WEBHOOK_URL = "your_discord_webhook_url"
+FEISHU_WEBHOOK_URL = "your_feishu_webhook_url"
 
 STOCK_CN_NAMES = {
     "AAPL": "苹果",
@@ -373,6 +374,23 @@ exit if below_ratio >= 0.5
 exit_price = that day's daily close
 ```
 
+Alternative MA5/signal-close exit rule:
+
+```text
+ma5_price = mean(close of the previous 5 completed trading days)
+ma5_below_ratio = count(day minute close < ma5_price) / count(day minute bars)
+signal_below_ratio = count(day minute close < signal_day.close) / count(day minute bars)
+exit if ma5_below_ratio >= 0.5 or signal_below_ratio >= 0.5
+exit_price = that day's daily close
+```
+
+Use it with:
+
+```bash
+python waterline_strategy.py --exit-rule ma5-or-signal
+python waterline_on_demand.py ... --exit-rule ma5-or-signal
+```
+
 Anchor upgrade uses 1h closes:
 
 ```text
@@ -438,6 +456,8 @@ After the scan, push alerts:
 ```bash
 python discord_signal_push.py --timeframe 4h
 python discord_signal_push.py --timeframe 1day
+python discord_signal_push.py --timeframe 1day --target feishu
+python discord_signal_push.py --timeframe 1day --target both
 ```
 
 Candidate rule:

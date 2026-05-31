@@ -259,6 +259,8 @@ def process_symbol(
             args.advance_pct,
             args.define_bars,
             args.confirm_bars,
+            args.exit_rule,
+            args.ma_window,
         )
         trades.append(trade)
         stats["trades"] += 1
@@ -287,6 +289,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--above-ratio", type=float, default=0.8)
     parser.add_argument("--min-minutes", type=int, default=300)
     parser.add_argument("--exit-below-ratio", type=float, default=0.5)
+    parser.add_argument("--exit-rule", choices=["anchor", "ma5-or-signal"], default="anchor")
+    parser.add_argument("--ma-window", type=int, default=5)
     parser.add_argument("--advance-pct", type=float, default=0.15)
     parser.add_argument("--define-bars", type=int, default=15)
     parser.add_argument("--confirm-bars", type=int, default=30)
