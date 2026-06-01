@@ -174,13 +174,21 @@ def entry_to_row(entry: WaterlineEntry) -> dict[str, str]:
     return row
 
 
-def find_bottom_entries(symbol: str, daily_path: Path, daily_rows: list[Row], start: str) -> list[BottomDivergenceEntry]:
+def find_bottom_entries(
+    symbol: str,
+    daily_path: Path,
+    daily_rows: list[Row],
+    start: str,
+    entry_end: str | None,
+) -> list[BottomDivergenceEntry]:
     entries: list[BottomDivergenceEntry] = []
     for sig in detect_ab_signals(symbol, "1day", daily_path, daily_rows):
         st = evaluate_ad_structure(daily_rows, sig)
         if st.structure_status != "D_TRIGGERED" or not st.D_time or st.D_price is None:
             continue
         if st.D_time[:10] < start:
+            continue
+        if entry_end is not None and st.D_time[:10] >= entry_end:
             continue
         entries.append(
             BottomDivergenceEntry(
@@ -211,11 +219,12 @@ def backtest_shared_exit(
     below_threshold: float,
     ma_window: int,
     min_exit_minutes: int,
+    end: str | None = None,
 ) -> StrategyTrade:
     daily_by_date = daily_close_by_date(daily_rows)
     minute_by_date = rows_by_date(minute_rows)
     ma_by_date = prior_ma_by_date(daily_rows, ma_window)
-    dates = sorted(date_text for date_text in daily_by_date if date_text > entry_date)
+    dates = sorted(date_text for date_text in daily_by_date if date_text > entry_date and (end is None or date_text < end))
     for holding_index, date_text in enumerate(dates, start=1):
         day_minutes = minute_by_date.get(date_text, [])
         if len(day_minutes) < min_exit_minutes:
@@ -370,7 +379,7 @@ def process_symbol(
     stats = collections.Counter()
 
     if args.strategy in {"bottom", "both"}:
-        bottom_entries = find_bottom_entries(symbol, daily_path, daily_rows, args.start)
+        bottom_entries = find_bottom_entries(symbol, daily_path, daily_rows, args.start, args.entry_end)
         stats["bottom_entries"] = len(bottom_entries)
         blocked_until: date | None = None
         for entry in bottom_entries:
@@ -399,6 +408,7 @@ def process_symbol(
                 args.exit_below_ratio,
                 args.ma_window,
                 args.min_exit_minutes,
+                args.entry_end or args.end,
             )
             bottom_trades.append(trade)
             stats["bottom_trades"] += 1
@@ -406,6 +416,8 @@ def process_symbol(
 
     if args.strategy in {"waterline", "both"}:
         candidates = scan_symbol_candidates(symbol, daily_rows, args.volume_lookback, args.volume_multiple, args.candle_k)
+        if args.entry_end is not None:
+            candidates = [candidate for candidate in candidates if candidate.trade_date < args.entry_end]
         candidates.sort(key=lambda item: (item.trade_date, item.signal_date))
         stats["waterline_candidates"] = len(candidates)
         blocked_until = None
@@ -449,6 +461,7 @@ def process_symbol(
                 args.exit_below_ratio,
                 args.ma_window,
                 args.min_exit_minutes,
+                args.entry_end or args.end,
             )
             waterline_trades.append(trade)
             stats["waterline_trades"] += 1
@@ -504,6 +517,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_ROOT)
     parser.add_argument("--start", default="2024-01-01")
     parser.add_argument("--end", default=None, help="End date, exclusive, for post-entry minute data.")
+    parser.add_argument("--entry-end", default=None, help="End date, exclusive, for new entries and exit valuation.")
     parser.add_argument("--apikey", default=None)
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--workers", type=int, default=2)
