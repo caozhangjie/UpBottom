@@ -541,15 +541,82 @@ python discord_signal_push.py --clear-cache
 
 Backtests are research-only and live outside the alert delivery path.
 
-Current shared-exit backtest:
+The implementation is in `strategy_backtest.py`. It can test bottom divergence,
+waterline, or both strategies with the same exit engine. Alert delivery stays
+separate: backtests do not send Discord/Feishu messages, and alert scripts do
+not calculate entries, exits, returns, or portfolio statistics.
 
-- Bottom divergence buys at `D_TRIGGERED` close. `D_TRIGGERED` still means the first close strictly above `CM_price`.
-- Waterline buys at the confirmed trade-day close after the existing waterline signal and minute confirmation.
-- Both strategies sell when at least 50% of a day's minute closes are below either the previous 5 completed daily closes' moving average or the strategy reference close.
-- Bottom divergence reference close is the D-point entry close. Waterline reference close is the signal-day close.
-- Half-year summaries group trades by entry date.
+### Trading Rules
 
-The implementation is in `strategy_backtest.py`. It caches 1min bars under the selected `--data-root`, reuses cached trade-day minute bars before making new API calls, and skips individual fetch failures instead of aborting the whole batch.
+Bottom divergence entry:
+
+```text
+Scan 1day bottom-divergence structures.
+Enter only when structure_status == D_TRIGGERED.
+D_TRIGGERED = first daily close strictly above CM_price.
+entry_date = D_time date
+entry_price = D_price
+reference_price = D_price
+```
+
+Waterline entry:
+
+```text
+Signal day:
+  close > open
+  close - low > 1.2 * max(high - close, 0)
+  volume >= mean(previous 10 daily volumes) * 2
+
+Trade day:
+  the next trading day after the signal day
+  fetch or reuse that day's 1min bars
+  above_ratio = count(1min close > signal_day.close) / count(1min bars)
+  entry if at least 300 1min bars exist and above_ratio >= 0.8
+
+entry_date = trade day
+entry_price = trade-day daily close
+reference_price = signal-day close
+```
+
+Shared exit:
+
+```text
+Start checking from the first trading day after entry.
+Use only days with at least 300 1min bars.
+
+ma5_price = mean(close of the previous 5 completed daily bars)
+ma5_below_ratio = count(day 1min close < ma5_price) / count(day 1min bars)
+reference_below_ratio = count(day 1min close < reference_price) / count(day 1min bars)
+
+Exit when ma5_below_ratio >= 0.5 or reference_below_ratio >= 0.5.
+exit_price = that day's daily close
+exit_rule = MA5 if both rules trigger on the same day; otherwise the triggered rule
+```
+
+Position handling:
+
+- Trades are processed chronologically per symbol.
+- A symbol can hold only one position per strategy at a time.
+- If a later entry signal occurs before the active trade exits, that later signal is skipped.
+- Bottom divergence and waterline are tracked independently, so each strategy has its own per-symbol position state.
+
+### Backtest Scope
+
+Backtests use `--start` as the inclusive first entry date. Use `--entry-end` to
+set an exclusive last entry date and to value open trades only before that same
+boundary. This is useful for clean calendar windows such as 2022-2023:
+
+```text
+--start 2022-01-01 --entry-end 2024-01-01 --end 2024-01-01
+```
+
+Without `--entry-end`, the backtest scans every entry from `--start` through the
+available daily cache. Half-year summaries group trades by `entry_date`.
+
+The script caches 1min bars under the selected `--data-root`, reuses cached
+trade-day minute bars before making new API calls, and skips individual fetch
+failures instead of aborting the whole batch. Fetch failures are counted in the
+final `stats=` line.
 
 Run both strategies:
 
@@ -560,6 +627,21 @@ python strategy_backtest.py \
   --data-root /data/UpBottom/data/stocks_2025_10 \
   --output-dir /data/UpBottom/outputs/stocks_2025_10 \
   --start 2024-01-01 \
+  --strategy both \
+  --workers 2
+```
+
+Run a bounded 2022-2023 window:
+
+```bash
+python strategy_backtest.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/stocks_2025_10/1day \
+  --data-root /data/UpBottom/data/stocks_2025_10 \
+  --output-dir /data/UpBottom/outputs/backtest_2022_2023 \
+  --start 2022-01-01 \
+  --end 2024-01-01 \
+  --entry-end 2024-01-01 \
   --strategy both \
   --workers 2
 ```
