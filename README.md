@@ -45,7 +45,6 @@ Corporate action guard:
 - `ad_structure_v05_core.py`: scanner and structure evaluator.
 - `discord_signal_push.py`: pushes BM-break alerts to Discord with local dedupe cache.
 - `waterline_signal.py`: independent waterline entry-signal scanner. It does not import or modify bottom-divergence recognition logic.
-- `waterline_strategy.py`: independent waterline strategy backtest. It consumes `waterline_signal.py` entries and manages anchors/exits.
 - `credentials.example.py`: local credential template.
 - `requirements.txt`: cloud/local Python dependencies.
 - `symbols.example.csv`: example custom stock universe file.
@@ -249,13 +248,13 @@ Charts are written to:
 
 The scan CSV always writes `/data/UpBottom/outputs/stocks_2025_10/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
 
-## Waterline Strategy
+## Waterline Signals
 
-Waterline is a separate research strategy from the bottom-divergence scanner. Keep signal detection and strategy execution separate:
+Waterline is a separate signal model from the bottom-divergence scanner:
 
 - `waterline_signal.py` finds entry candidates only.
-- `waterline_strategy.py` consumes those candidates and manages holding, anchor updates, and exits.
-- Neither file changes `ad_structure_v05_core.py` or the bottom-divergence scan pipeline.
+- It does not calculate exits, returns, position state, or portfolio statistics.
+- It does not change `ad_structure_v05_core.py` or the bottom-divergence scan pipeline.
 
 Required local data layout:
 
@@ -270,51 +269,6 @@ All CSVs use the same columns as the existing OHLCV cache:
 ```csv
 datetime,open,high,low,close,volume
 ```
-
-The recommended research flow is on-demand, so you do not need to download 1min/1h data for the whole universe:
-
-```text
-daily data -> find signal-day candidates
-candidate D+1 only -> download 1min bars -> confirm entry
-confirmed entries only -> download later 1min and 1h bars -> backtest exit/anchors
-```
-
-`waterline_on_demand.py` processes symbols concurrently with `--workers`, but each symbol is handled in chronological order. If a later signal falls inside the same symbol's active holding period, that signal is skipped. This keeps per-symbol trades non-overlapping while still allowing multiple symbols to run in parallel.
-
-Run the on-demand pipeline:
-
-```bash
-python waterline_on_demand.py \
-  --symbols-file symbols_us_1610.csv \
-  --daily-dir /data/UpBottom/data/us_1610_2024_01_daily/1day \
-  --data-root /data/UpBottom/data/waterline_on_demand \
-  --output-dir /data/UpBottom/outputs/waterline_on_demand \
-  --start 2024-01-01
-```
-
-For a smaller first pass, limit the symbol set:
-
-```bash
-python waterline_on_demand.py \
-  --symbols AAPL MSFT NVDA \
-  --daily-dir /data/UpBottom/data/us_1610_2024_01_daily/1day \
-  --data-root /data/UpBottom/data/waterline_on_demand \
-  --output-dir /data/UpBottom/outputs/waterline_on_demand_smoke \
-  --start 2025-01-01 \
-  --end 2026-07-01 \
-  --workers 2
-```
-
-This writes:
-
-```text
-waterline_candidates.csv
-waterline_entries.csv
-waterline_trades.csv
-waterline_half_year_summary.csv
-```
-
-### Waterline Entry Signal
 
 Signal day `D`:
 
@@ -358,105 +312,13 @@ symbol, signal_date, signal_close, volume_ratio, trade_date,
 minute_above_ratio, entry_time, entry_price
 ```
 
-### Waterline Strategy
-
-Initial anchor:
-
-```text
-anchor_price = signal_day.close
-```
-
-Daily exit rule after entry:
-
-```text
-below_ratio = count(day minute close < anchor_price) / count(day minute bars)
-exit if below_ratio >= 0.5
-exit_price = that day's daily close
-```
-
-Alternative MA5/signal-close exit rule:
-
-```text
-ma5_price = mean(close of the previous 5 completed trading days)
-ma5_below_ratio = count(day minute close < ma5_price) / count(day minute bars)
-signal_below_ratio = count(day minute close < signal_day.close) / count(day minute bars)
-exit if ma5_below_ratio >= 0.5 or signal_below_ratio >= 0.5
-exit_price = that day's daily close
-```
-
-Use it with:
-
-```bash
-python waterline_strategy.py --exit-rule ma5-or-signal
-python waterline_on_demand.py ... --exit-rule ma5-or-signal
-```
-
-Anchor upgrade uses 1h closes:
-
-```text
-advance_pct = 0.15
-define_bars = 15
-confirm_bars = 30
-```
-
-When 15 consecutive 1h bars define a candidate box:
-
-```text
-box_high = max(close over the 15 bars)
-box_low = min(close over the 15 bars)
-```
-
-The box is eligible only when:
-
-```text
-box_high >= current_anchor * 1.15
-```
-
-Then the next 30 consecutive 1h closes must all stay inside:
-
-```text
-box_low <= close_1h <= box_high
-```
-
-If confirmed:
-
-```text
-anchor_price = box_low
-```
-
-The implementation treats anchors as one-way structural stops: a confirmed `box_low` raises the anchor only when it is above the current anchor. It does not lower an existing anchor.
-
-If a confirmation close breaks below `box_low`, the candidate box fails. If it closes above `box_high`, the stock is treated as continuing higher; the old anchor remains and the strategy keeps looking for a new eligible platform.
-
-Each row in `waterline_entries.csv` is backtested independently in the first version. Position netting and portfolio-level capital allocation are intentionally out of scope.
-
-Run after generating entries:
-
-```bash
-python waterline_strategy.py
-```
-
-Output:
-
-```text
-/data/UpBottom/outputs/stocks_2025_10/waterline_trades.csv
-```
-
-Important columns:
-
-```text
-symbol, trade_date, entry_price, initial_anchor, final_anchor,
-anchor_updates, exit_date, exit_price, exit_below_ratio, return_pct, status
-```
-
 ## Alerts
 
-Alert delivery is intentionally separate from strategy backtesting:
+Alert delivery is intentionally separate from signal calculation:
 
 - Alert scripts only read scanner output such as `ad_signals.csv`, format structure progress, and send notifications.
 - Alert scripts do not calculate entries, exits, returns, position state, or portfolio statistics.
-- Strategy backtests read signal/price data and write research CSVs. They do not send Discord or Feishu messages.
-- Keep operational alert dedupe caches separate from research trade outputs.
+- Keep operational alert dedupe caches separate from research outputs.
 
 After the scan, push alerts:
 
@@ -537,124 +399,6 @@ Clear the alert dedupe cache without sending alerts:
 python discord_signal_push.py --clear-cache
 ```
 
-## Strategy Backtests
-
-Backtests are research-only and live outside the alert delivery path.
-
-The implementation is in `strategy_backtest.py`. It can test bottom divergence,
-waterline, or both strategies with the same exit engine. Alert delivery stays
-separate: backtests do not send Discord/Feishu messages, and alert scripts do
-not calculate entries, exits, returns, or portfolio statistics.
-
-### Trading Rules
-
-Bottom divergence entry:
-
-```text
-Scan 1day bottom-divergence structures.
-Enter only when structure_status == D_TRIGGERED.
-D_TRIGGERED = first daily close strictly above CM_price.
-entry_date = D_time date
-entry_price = D_price
-reference_price = D_price
-```
-
-Waterline entry:
-
-```text
-Signal day:
-  close > open
-  close - low > 1.2 * max(high - close, 0)
-  volume >= mean(previous 10 daily volumes) * 2
-
-Trade day:
-  the next trading day after the signal day
-  fetch or reuse that day's 1min bars
-  above_ratio = count(1min close > signal_day.close) / count(1min bars)
-  entry if at least 300 1min bars exist and above_ratio >= 0.8
-
-entry_date = trade day
-entry_price = trade-day daily close
-reference_price = signal-day close
-```
-
-Shared exit:
-
-```text
-Start checking from the first trading day after entry.
-Use only days with at least 300 1min bars.
-
-ma5_price = mean(close of the previous 5 completed daily bars)
-ma5_below_ratio = count(day 1min close < ma5_price) / count(day 1min bars)
-reference_below_ratio = count(day 1min close < reference_price) / count(day 1min bars)
-
-Exit when ma5_below_ratio >= 0.5 or reference_below_ratio >= 0.5.
-exit_price = that day's daily close
-exit_rule = MA5 if both rules trigger on the same day; otherwise the triggered rule
-```
-
-Position handling:
-
-- Trades are processed chronologically per symbol.
-- A symbol can hold only one position per strategy at a time.
-- If a later entry signal occurs before the active trade exits, that later signal is skipped.
-- Bottom divergence and waterline are tracked independently, so each strategy has its own per-symbol position state.
-
-### Backtest Scope
-
-Backtests use `--start` as the inclusive first entry date. Use `--entry-end` to
-set an exclusive last entry date and to value open trades only before that same
-boundary. This is useful for clean calendar windows such as 2022-2023:
-
-```text
---start 2022-01-01 --entry-end 2024-01-01 --end 2024-01-01
-```
-
-Without `--entry-end`, the backtest scans every entry from `--start` through the
-available daily cache. Half-year summaries group trades by `entry_date`.
-
-The script caches 1min bars under the selected `--data-root`, reuses cached
-trade-day minute bars before making new API calls, and skips individual fetch
-failures instead of aborting the whole batch. Fetch failures are counted in the
-final `stats=` line.
-
-Run both strategies:
-
-```bash
-python strategy_backtest.py \
-  --symbols-file symbols_us_1610.csv \
-  --daily-dir /data/UpBottom/data/stocks_2025_10/1day \
-  --data-root /data/UpBottom/data/stocks_2025_10 \
-  --output-dir /data/UpBottom/outputs/stocks_2025_10 \
-  --start 2024-01-01 \
-  --strategy both \
-  --workers 2
-```
-
-Run a bounded 2022-2023 window:
-
-```bash
-python strategy_backtest.py \
-  --symbols-file symbols_us_1610.csv \
-  --daily-dir /data/UpBottom/data/stocks_2025_10/1day \
-  --data-root /data/UpBottom/data/stocks_2025_10 \
-  --output-dir /data/UpBottom/outputs/backtest_2022_2023 \
-  --start 2022-01-01 \
-  --end 2024-01-01 \
-  --entry-end 2024-01-01 \
-  --strategy both \
-  --workers 2
-```
-
-Outputs:
-
-```text
-bottom_divergence_trades.csv
-bottom_divergence_half_year_summary.csv
-waterline_ma5_trades.csv
-waterline_ma5_half_year_summary.csv
-```
-
 ## Full Automation
 
 Recommended crontab uses New York time so market close timing automatically follows daylight saving time.
@@ -719,7 +463,6 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 /data/UpBottom/outputs/stocks_2025_10/discord_push_cache.json
 /data/UpBottom/outputs/stocks_2025_10/charts/    # only when --render-charts is used
 /data/UpBottom/outputs/stocks_2025_10/waterline_entries.csv
-/data/UpBottom/outputs/stocks_2025_10/waterline_trades.csv
 ```
 
 ## Useful Commands
@@ -754,9 +497,8 @@ Render charts for manual validation:
 python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
 ```
 
-Run waterline entry scan and strategy backtest:
+Run waterline entry scan:
 
 ```bash
 python waterline_signal.py --symbols MU
-python waterline_strategy.py
 ```
