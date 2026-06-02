@@ -44,6 +44,7 @@ Corporate action guard:
 - `fetch_sp500_2026_and_mark.py`: main data/update/scan pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists. PNG charts are optional manual validation output.
 - `ad_structure_v05_core.py`: scanner and structure evaluator.
 - `bottom_divergence_signal_push.py`: pushes bottom-divergence BM-break alerts to Discord/Feishu with local dedupe cache.
+- `bottom_divergence_d_trigger_push.py`: pushes daily bottom-divergence D second-breakout confirmations after the daily close.
 - `waterline_signal.py`: independent waterline entry-signal scanner. It does not import or modify bottom-divergence recognition logic.
 - `waterline_signal_push.py`: pushes waterline signal-day and trade-day alerts. It does not import or modify bottom-divergence recognition logic.
 - `credentials.example.py`: local credential template.
@@ -334,6 +335,15 @@ python bottom_divergence_signal_push.py --timeframe 1day --target feishu
 python bottom_divergence_signal_push.py --timeframe 1day --target both
 ```
 
+After the daily scan, push daily close-confirmed D second-breakout alerts:
+
+```bash
+python bottom_divergence_d_trigger_push.py
+python bottom_divergence_d_trigger_push.py --target both
+```
+
+`bottom_divergence_d_trigger_push.py` defaults to `--timeframe 1day --date today`, where `today` is America/New_York today. Use `--date latest` to preview or backfill the latest D date in `ad_signals.csv`, or `--date YYYY-MM-DD` for an exact trading date.
+
 After generating waterline CSVs, push waterline alerts with the separate waterline pusher:
 
 ```bash
@@ -361,6 +371,14 @@ and not C_FAIL
 and not STRUCTURE_FAILED
 ```
 
+Bottom-divergence D confirmation rule:
+
+```text
+timeframe == 1day
+structure_status == D_TRIGGERED
+D_time date == selected --date
+```
+
 Push dedupe cache:
 
 ```text
@@ -377,6 +395,12 @@ Waterline push dedupe cache:
 
 ```text
 /data/UpBottom/outputs/stocks/waterline_push_cache.json
+```
+
+D second-breakout push dedupe cache:
+
+```text
+/data/UpBottom/outputs/stocks/bottom_divergence_d_push_cache.json
 ```
 
 Waterline signal-day cache key:
@@ -408,6 +432,7 @@ Preview without sending:
 
 ```bash
 python bottom_divergence_signal_push.py --timeframe 4h --dry-run
+python bottom_divergence_d_trigger_push.py --dry-run
 python waterline_signal_push.py --alert-stage signal-day --dry-run
 python waterline_signal_push.py --alert-stage trade-day --dry-run
 ```
@@ -427,6 +452,7 @@ Force resend:
 
 ```bash
 python bottom_divergence_signal_push.py --timeframe 4h --force
+python bottom_divergence_d_trigger_push.py --force
 python waterline_signal_push.py --alert-stage signal-day --force
 ```
 
@@ -434,6 +460,7 @@ Clear the alert dedupe cache without sending alerts:
 
 ```bash
 python bottom_divergence_signal_push.py --clear-cache
+python bottom_divergence_d_trigger_push.py --clear-cache
 python waterline_signal_push.py --clear-cache
 ```
 
@@ -457,8 +484,8 @@ TZ=America/New_York
 # 4h close bar: run after market close.
 20 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
 
-# Daily bar: run after market close and after the 4h close job.
-40 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 1day >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
+# Daily bar: run after market close and after the 4h close job. D confirmation is daily-close based.
+40 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 1day && python bottom_divergence_d_trigger_push.py >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
 
 # Off-hours split-adjustment maintenance. Runs after Twelve Data corporate-action updates are likely to have settled.
 30 3 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
@@ -499,6 +526,7 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 /data/UpBottom/outputs/stocks/stock_metadata.csv
 /data/UpBottom/outputs/stocks/split_jump_repairs.csv
 /data/UpBottom/outputs/stocks/discord_push_cache.json
+/data/UpBottom/outputs/stocks/bottom_divergence_d_push_cache.json
 /data/UpBottom/outputs/stocks/waterline_push_cache.json
 /data/UpBottom/outputs/stocks/charts/    # only when --render-charts is used
 /data/UpBottom/outputs/stocks/waterline_candidates.csv
