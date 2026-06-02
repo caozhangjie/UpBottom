@@ -1,11 +1,10 @@
 """Waterline signal scanner.
 
 This module is intentionally separate from the bottom-divergence scanner. It
-only finds waterline entries:
+only finds waterline candidates and confirmed entries:
 
-- signal day: strong bullish daily candle with volume expansion
-- trade day: next trading day has enough minute closes above signal close
-- entry: trade-day close, after full-day confirmation
+- candidate: signal day with a strong bullish daily candle and volume expansion
+- entry: next trading day has enough minute closes above signal close
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ad_structure_v05_core import Row, load_rows
-from fetch_sp500_2026_and_mark import DATASET_NAME, DATA_ROOT, OUTPUT_ROOT, safe_symbol
+from fetch_sp500_2026_and_mark import DATA_ROOT, OUTPUT_ROOT, safe_symbol
 
 
 @dataclass(frozen=True)
@@ -235,18 +234,35 @@ def confirm_candidate_entry(
     )
 
 
-def write_entries(entries: list[WaterlineEntry], output_path: Path) -> None:
+def write_dataclass_rows(rows: list[WaterlineEntry] | list[WaterlineCandidate], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(WaterlineEntry.__dataclass_fields__.keys())
+    if rows:
+        fieldnames = list(rows[0].__dataclass_fields__.keys())
+    else:
+        fieldnames = list(WaterlineEntry.__dataclass_fields__.keys())
     with output_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for entry in entries:
-            row = asdict(entry)
+        for item in rows:
+            row = asdict(item)
             for key, value in row.items():
                 if isinstance(value, float):
                     row[key] = fmt(value)
             writer.writerow(row)
+
+
+def write_entries(entries: list[WaterlineEntry], output_path: Path) -> None:
+    write_dataclass_rows(entries, output_path)
+
+
+def write_candidates(candidates: list[WaterlineCandidate], output_path: Path) -> None:
+    if candidates:
+        write_dataclass_rows(candidates, output_path)
+        return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(WaterlineCandidate.__dataclass_fields__.keys()))
+        writer.writeheader()
 
 
 def parse_args() -> argparse.Namespace:
@@ -263,6 +279,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--above-ratio", type=float, default=0.8)
     parser.add_argument("--min-minutes", type=int, default=1)
     parser.add_argument("--output", type=Path, default=OUTPUT_ROOT / "waterline_entries.csv")
+    parser.add_argument("--candidates-output", type=Path, default=OUTPUT_ROOT / "waterline_candidates.csv")
     return parser.parse_args()
 
 
@@ -275,13 +292,24 @@ def main() -> int:
     else:
         symbols = available_daily_symbols(args.daily_dir)
 
+    candidates: list[WaterlineCandidate] = []
     entries: list[WaterlineEntry] = []
     for symbol in symbols:
         daily_path = args.daily_dir / f"{symbol}_1day_indicators.csv"
         minute_path = args.minute_dir / f"{symbol}_{args.minute_timeframe}_indicators.csv"
-        if not daily_path.exists() or not minute_path.exists():
+        if not daily_path.exists():
             continue
         daily_rows = load_rows(daily_path, min_date=args.start)
+        symbol_candidates = scan_symbol_candidates(
+            symbol,
+            daily_rows,
+            args.volume_lookback,
+            args.volume_multiple,
+            args.candle_k,
+        )
+        candidates.extend(symbol_candidates)
+        if not minute_path.exists():
+            continue
         minute_rows = load_rows(minute_path, min_date=args.start)
         entries.extend(
             scan_symbol_entries(
@@ -297,8 +325,11 @@ def main() -> int:
             )
         )
 
+    candidates.sort(key=lambda item: (item.signal_date, item.symbol, item.trade_date))
     entries.sort(key=lambda item: (item.trade_date, item.symbol, item.signal_date))
+    write_candidates(candidates, args.candidates_output)
     write_entries(entries, args.output)
+    print(f"candidates={len(candidates)} candidates_output={args.candidates_output}")
     print(f"entries={len(entries)} output={args.output}")
     return 0
 

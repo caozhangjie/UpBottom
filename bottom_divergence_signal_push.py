@@ -1,12 +1,11 @@
-"""Push bottom-divergence and waterline alerts to Discord/Feishu.
+"""Push bottom-divergence BM-break alerts to Discord/Feishu.
 
 Typical runs:
 
-    python discord_signal_push.py --timeframe 4h
-    python discord_signal_push.py --timeframe 1day
-    python discord_signal_push.py --signal-type waterline --target both
-    python discord_signal_push.py --timeframe 4h --force
-    python discord_signal_push.py --timeframe 4h --dry-run
+    python bottom_divergence_signal_push.py --timeframe 4h
+    python bottom_divergence_signal_push.py --timeframe 1day
+    python bottom_divergence_signal_push.py --timeframe 4h --force
+    python bottom_divergence_signal_push.py --timeframe 4h --dry-run
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ RUNTIME_ROOT = Path(os.environ.get("UPBOTTOM_RUNTIME_ROOT") or "/data/UpBottom")
 DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks")
 OUTPUT_ROOT = RUNTIME_ROOT / "outputs" / DATASET_NAME
 SIGNALS_PATH = OUTPUT_ROOT / "ad_signals.csv"
-WATERLINE_SIGNALS_PATH = OUTPUT_ROOT / "waterline_entries.csv"
 METADATA_PATH = OUTPUT_ROOT / "sp500_metadata.csv"
 STOCK_METADATA_PATH = OUTPUT_ROOT / "stock_metadata.csv"
 CACHE_PATH = OUTPUT_ROOT / "discord_push_cache.json"
@@ -74,7 +72,7 @@ def save_cache(path: Path, cache: dict) -> None:
     path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def bottom_alert_key(row: dict[str, str]) -> str:
+def alert_key(row: dict[str, str]) -> str:
     return "|".join(
         [
             row.get("symbol", ""),
@@ -86,29 +84,14 @@ def bottom_alert_key(row: dict[str, str]) -> str:
     )
 
 
-def waterline_alert_key(row: dict[str, str]) -> str:
-    return "|".join(
-        [
-            "waterline",
-            row.get("symbol", ""),
-            row.get("signal_date", ""),
-            row.get("trade_date", ""),
-            row.get("entry_time", ""),
-        ]
-    )
-
-
-def delivery_key(target: str, row: dict[str, str], signal_type: str) -> str:
-    if signal_type == "waterline":
-        return f"{target}|{waterline_alert_key(row)}"
-    key = bottom_alert_key(row)
+def delivery_key(target: str, row: dict[str, str]) -> str:
+    key = alert_key(row)
     if target == "discord":
-        # Preserve the old Discord bottom-divergence cache key shape.
         return key
     return f"{target}|{key}"
 
 
-def is_bottom_push_candidate(row: dict[str, str], timeframe: str) -> bool:
+def is_push_candidate(row: dict[str, str], timeframe: str) -> bool:
     if timeframe != "all" and row.get("timeframe") != timeframe:
         return False
     if not row.get("BM_break_time"):
@@ -118,16 +101,6 @@ def is_bottom_push_candidate(row: dict[str, str], timeframe: str) -> bool:
     if row.get("structure_status") in {"NO_BM_BREAK", "STRUCTURE_FAILED"}:
         return False
     return True
-
-
-def is_waterline_push_candidate(row: dict[str, str]) -> bool:
-    return bool(row.get("symbol") and row.get("signal_date") and row.get("trade_date") and row.get("entry_time"))
-
-
-def is_push_candidate(row: dict[str, str], signal_type: str, timeframe: str) -> bool:
-    if signal_type == "waterline":
-        return is_waterline_push_candidate(row)
-    return is_bottom_push_candidate(row, timeframe)
 
 
 def structure_stage_text(row: dict[str, str]) -> str:
@@ -143,17 +116,12 @@ def structure_stage_text(row: dict[str, str]) -> str:
     return row.get("structure_status") or "-"
 
 
-def metadata_text(symbol: str, metadata: dict[str, dict[str, str]]) -> tuple[str, str, str]:
+def format_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> str:
+    symbol = row.get("symbol", "")
     info = metadata.get(symbol, {})
     english_name = info.get("english_name") or "未获取"
     sector = info.get("sector") or "未获取"
     sub_industry = info.get("sub_industry") or "未获取"
-    return english_name, sector, sub_industry
-
-
-def format_bottom_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> str:
-    symbol = row.get("symbol", "")
-    english_name, sector, sub_industry = metadata_text(symbol, metadata)
     c_items = json.loads(row.get("C_sequence") or "[]")
     c_text = "-"
     if c_items:
@@ -177,43 +145,17 @@ def format_bottom_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]
     )
 
 
-def format_waterline_alert(row: dict[str, str], metadata: dict[str, dict[str, str]]) -> str:
-    symbol = row.get("symbol", "")
-    english_name, sector, sub_industry = metadata_text(symbol, metadata)
-    return "\n".join(
-        [
-            f"**{symbol} | 水上漂信号提醒**",
-            f"英文名：{english_name}",
-            f"行业：{sector} / {sub_industry}",
-            f"信号日：{row.get('signal_date', '-')} @ {row.get('signal_close', '-')}",
-            f"信号日开高低收：{row.get('signal_open', '-')} / {row.get('signal_high', '-')} / {row.get('signal_low', '-')} / {row.get('signal_close', '-')}",
-            f"量能倍数：{row.get('volume_ratio', '-')}，前10日均量：{row.get('prior_volume_avg', '-')}",
-            f"交易日：{row.get('trade_date', '-')}",
-            f"分钟水上比例：{row.get('minute_above_ratio', '-')} ({row.get('minute_above', '-')}/{row.get('minute_total', '-')})",
-            f"入场确认：{row.get('entry_time', '-')} @ {row.get('entry_price', '-')}",
-            f"分钟周期：{row.get('minute_timeframe', '-')}",
-        ]
-    )
-
-
-def format_alert(row: dict[str, str], metadata: dict[str, dict[str, str]], signal_type: str) -> str:
-    if signal_type == "waterline":
-        return format_waterline_alert(row, metadata)
-    return format_bottom_alert(row, metadata)
-
-
 def chunk_alerts(
     rows: Iterable[dict[str, str]],
     metadata: dict[str, dict[str, str]],
     header: str,
-    signal_type: str,
     limit: int = 1500,
 ) -> list[tuple[str, list[dict[str, str]]]]:
     chunks: list[tuple[str, list[dict[str, str]]]] = []
     current = ""
     current_rows: list[dict[str, str]] = []
     for row in rows:
-        item = format_alert(row, metadata, signal_type).strip()
+        item = format_alert(row, metadata).strip()
         if not item:
             continue
         separator = "\n\n---\n\n"
@@ -337,28 +279,24 @@ def post_feishu(webhook_url: str, content: str, max_attempts: int = 8, timeout: 
     raise RuntimeError("Feishu post failed without a captured exception.")
 
 
-def mark_sent(target: str, sent: dict, rows: list[dict[str, str]], chunk_index: int, signal_type: str) -> None:
+def mark_sent(target: str, sent: dict, rows: list[dict[str, str]], chunk_index: int) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     for row in rows:
-        sent[delivery_key(target, row, signal_type)] = {
+        sent[delivery_key(target, row)] = {
             "sent_at": now,
             "target": target,
-            "signal_type": signal_type,
             "chunk_index": chunk_index,
             "symbol": row.get("symbol", ""),
             "timeframe": row.get("timeframe", ""),
             "BM_break_time": row.get("BM_break_time", ""),
-            "signal_date": row.get("signal_date", ""),
-            "trade_date": row.get("trade_date", ""),
             "structure_status": row.get("structure_status", ""),
         }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Push bottom-divergence or waterline alerts to Discord/Feishu.")
-    parser.add_argument("--signal-type", choices=["bottom", "waterline"], default="bottom")
+    parser = argparse.ArgumentParser(description="Push BM-break bottom-divergence alerts to Discord/Feishu.")
     parser.add_argument("--timeframe", choices=["4h", "1day", "all"], default="all")
-    parser.add_argument("--signals", type=Path, default=None)
+    parser.add_argument("--signals", type=Path, default=SIGNALS_PATH)
     parser.add_argument("--metadata", type=Path, default=default_metadata_path())
     parser.add_argument("--cache", type=Path, default=CACHE_PATH)
     parser.add_argument("--webhook-url", default=None)
@@ -368,10 +306,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Push alerts even if they were already sent.")
     parser.add_argument("--clear-cache", action="store_true", help="Clear the alert dedupe cache and exit.")
     parser.add_argument("--dry-run", action="store_true", help="Print alerts without sending or updating cache.")
-    parser.add_argument("--chunk-limit", type=int, default=1500, help="Maximum characters per Discord message chunk.")
-    parser.add_argument("--post-timeout", type=int, default=60, help="HTTP timeout seconds for each Discord request.")
-    parser.add_argument("--max-attempts", type=int, default=8, help="Retry attempts for each Discord message chunk.")
-    parser.add_argument("--chunk-delay", type=float, default=2.0, help="Delay seconds between Discord message chunks.")
+    parser.add_argument("--chunk-limit", type=int, default=1500, help="Maximum characters per alert message chunk.")
+    parser.add_argument("--post-timeout", type=int, default=60, help="HTTP timeout seconds for each webhook request.")
+    parser.add_argument("--max-attempts", type=int, default=8, help="Retry attempts for each message chunk.")
+    parser.add_argument("--chunk-delay", type=float, default=2.0, help="Delay seconds between message chunks.")
     parser.add_argument(
         "--stop-on-error",
         action="store_true",
@@ -417,7 +355,7 @@ def send_chunks(
             if index < len(chunks):
                 time.sleep(args.chunk_delay)
             continue
-        mark_sent(target, sent, chunk_rows, index, args.signal_type)
+        mark_sent(target, sent, chunk_rows, index)
         save_cache(args.cache, cache)
         pushed += len(chunk_rows)
         print(
@@ -432,7 +370,6 @@ def send_chunks(
 
 def main() -> int:
     args = parse_args()
-    signals_path = args.signals or (WATERLINE_SIGNALS_PATH if args.signal_type == "waterline" else SIGNALS_PATH)
     if args.clear_cache:
         save_cache(args.cache, {"sent": {}})
         print(f"cache_cleared={args.cache}")
@@ -444,29 +381,28 @@ def main() -> int:
         or os.environ.get("FEISHU_WEBHOOK_URL")
         or CREDENTIALS_FEISHU_WEBHOOK_URL
     )
-    should_refresh_metadata = args.refresh_metadata or (args.signal_type == "bottom" and not args.metadata.exists())
-    if should_refresh_metadata:
+    if args.refresh_metadata or not args.metadata.exists():
         try:
             from fetch_sp500_2026_and_mark import get_sp500_metadata, write_metadata_csv
 
             write_metadata_csv(get_sp500_metadata(refresh=True), args.metadata)
         except Exception as exc:
             print(f"metadata_refresh_failed={exc}")
-    rows = load_csv(signals_path)
+    rows = load_csv(args.signals)
     metadata = load_metadata(args.metadata)
     cache = load_cache(args.cache)
     sent = cache.setdefault("sent", {})
-    candidates = [row for row in rows if is_push_candidate(row, args.signal_type, args.timeframe)]
+    candidates = [row for row in rows if is_push_candidate(row, args.timeframe)]
     targets = ["discord", "feishu"] if args.target == "both" else [args.target]
     pending_by_target = {
-        target: [row for row in candidates if args.force or delivery_key(target, row, args.signal_type) not in sent]
+        target: [row for row in candidates if args.force or delivery_key(target, row) not in sent]
         for target in targets
     }
     pending_count = sum(len(rows) for rows in pending_by_target.values())
 
     print(
-        f"signal_type={args.signal_type} timeframe={args.timeframe} candidates={len(candidates)} "
-        f"pending={pending_count} target={args.target} force={args.force} signals={signals_path} cache={args.cache}",
+        f"timeframe={args.timeframe} candidates={len(candidates)} "
+        f"pending={pending_count} target={args.target} force={args.force} signals={args.signals} cache={args.cache}",
         flush=True,
     )
     if not pending_count:
@@ -475,11 +411,8 @@ def main() -> int:
     if args.dry_run:
         for target in targets:
             pending = pending_by_target[target]
-            if args.signal_type == "waterline":
-                header = f"【UpBottom 水上漂提醒】{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            else:
-                header = f"【UpBottom 底背离提醒】{args.timeframe}，{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            chunks = chunk_alerts(pending, metadata, header, args.signal_type, limit=args.chunk_limit)
+            header = f"【UpBottom 底背离提醒】{args.timeframe}，{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            chunks = chunk_alerts(pending, metadata, header, limit=args.chunk_limit)
             print(f"{target}_chunks={len(chunks)}", flush=True)
             for index, (chunk, chunk_rows) in enumerate(chunks, start=1):
                 symbols = ",".join(row.get("symbol", "") for row in chunk_rows)
@@ -499,11 +432,8 @@ def main() -> int:
         if not pending:
             print(f"{target}_pending=0", flush=True)
             continue
-        if args.signal_type == "waterline":
-            header = f"【UpBottom 水上漂提醒】{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        else:
-            header = f"【UpBottom 底背离提醒】{args.timeframe}，{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        chunks = chunk_alerts(pending, metadata, header, args.signal_type, limit=args.chunk_limit)
+        header = f"【UpBottom 底背离提醒】{args.timeframe}，{target} 新增 {len(pending)} 条，生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        chunks = chunk_alerts(pending, metadata, header, limit=args.chunk_limit)
         print(f"{target}_chunks={len(chunks)}", flush=True)
         pushed, failures = send_chunks(target, webhook_by_target[target], chunks, args, cache, sent)
         pushed_total += pushed

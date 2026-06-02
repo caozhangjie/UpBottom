@@ -43,8 +43,9 @@ Corporate action guard:
 
 - `fetch_sp500_2026_and_mark.py`: main data/update/scan pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists. PNG charts are optional manual validation output.
 - `ad_structure_v05_core.py`: scanner and structure evaluator.
-- `discord_signal_push.py`: pushes BM-break alerts to Discord with local dedupe cache.
+- `bottom_divergence_signal_push.py`: pushes bottom-divergence BM-break alerts to Discord/Feishu with local dedupe cache.
 - `waterline_signal.py`: independent waterline entry-signal scanner. It does not import or modify bottom-divergence recognition logic.
+- `waterline_signal_push.py`: pushes waterline signal-day and trade-day alerts. It does not import or modify bottom-divergence recognition logic.
 - `credentials.example.py`: local credential template.
 - `requirements.txt`: cloud/local Python dependencies.
 - `symbols.example.csv`: example custom stock universe file.
@@ -302,14 +303,18 @@ python waterline_signal.py --symbols-file symbols_us_1610.csv
 Output:
 
 ```text
+/data/UpBottom/outputs/stocks/waterline_candidates.csv
 /data/UpBottom/outputs/stocks/waterline_entries.csv
 ```
 
 Important columns:
 
 ```text
-symbol, signal_date, signal_close, volume_ratio, trade_date,
-minute_above_ratio, entry_time, entry_price
+waterline_candidates.csv:
+symbol, signal_date, signal_close, volume_ratio, trade_date, trade_close
+
+waterline_entries.csv:
+symbol, signal_date, signal_close, volume_ratio, trade_date, minute_above_ratio, entry_time, entry_price
 ```
 
 ## Alerts
@@ -323,27 +328,28 @@ Alert delivery is intentionally separate from signal calculation:
 After the bottom-divergence scan, push alerts:
 
 ```bash
-python discord_signal_push.py --timeframe 4h
-python discord_signal_push.py --timeframe 1day
-python discord_signal_push.py --timeframe 1day --target feishu
-python discord_signal_push.py --timeframe 1day --target both
+python bottom_divergence_signal_push.py --timeframe 4h
+python bottom_divergence_signal_push.py --timeframe 1day
+python bottom_divergence_signal_push.py --timeframe 1day --target feishu
+python bottom_divergence_signal_push.py --timeframe 1day --target both
 ```
 
-After generating `waterline_entries.csv`, push waterline alerts with the same delivery mechanism:
+After generating waterline CSVs, push waterline alerts with the separate waterline pusher:
 
 ```bash
-python discord_signal_push.py --signal-type waterline
-python discord_signal_push.py --signal-type waterline --target feishu
-python discord_signal_push.py --signal-type waterline --target both
+python waterline_signal_push.py --alert-stage signal-day
+python waterline_signal_push.py --alert-stage trade-day
 ```
 
-`--signal-type bottom` is the default, so existing bottom-divergence commands do not need to change. `--target discord` is the default. Use `--target both` on the server when you want Discord and Feishu to receive the same alert batch.
+`bottom_divergence_signal_push.py` defaults to Discord. `waterline_signal_push.py` defaults to Feishu because the current workflow uses dedicated Feishu groups for waterline signal-day and trade-day alerts. Use `--target both` only when you also want Discord copies.
 
 Server credentials can be configured in `credentials.py` or environment variables:
 
 ```python
 DISCORD_WEBHOOK_URL = "your_discord_webhook_url"
 FEISHU_WEBHOOK_URL = "your_feishu_webhook_url"
+WATERLINE_SIGNAL_FEISHU_WEBHOOK_URL = "your_waterline_signal_day_feishu_webhook_url"
+WATERLINE_TRADE_FEISHU_WEBHOOK_URL = "your_waterline_trade_day_feishu_webhook_url"
 ```
 
 Bottom-divergence candidate rule:
@@ -367,10 +373,22 @@ Cache key:
 symbol | timeframe | golden_A_time | golden_B_time | BM_break_time
 ```
 
-Waterline cache key:
+Waterline push dedupe cache:
 
 ```text
-target | waterline | symbol | signal_date | trade_date | entry_time
+/data/UpBottom/outputs/stocks/waterline_push_cache.json
+```
+
+Waterline signal-day cache key:
+
+```text
+target | waterline-signal-day | symbol | signal_date
+```
+
+Waterline trade-day cache key:
+
+```text
+target | waterline-trade-day | symbol | signal_date | trade_date | entry_time
 ```
 
 Alert messages include stock ID, English name, sector/sub-industry, structure points, and a Chinese progress label:
@@ -384,13 +402,14 @@ Alert messages include stock ID, English name, sector/sub-industry, structure po
 
 Chinese stock names are not included in alert messages.
 
-Waterline alert messages include stock ID, English name, sector/sub-industry, signal day, volume ratio, trade day, minute waterline ratio, and entry confirmation price.
+Waterline signal-day messages include stock ID, English name, sector/sub-industry, signal day, volume ratio, and next trade day. Waterline trade-day messages include minute waterline ratio and entry confirmation price.
 
 Preview without sending:
 
 ```bash
-python discord_signal_push.py --timeframe 4h --dry-run
-python discord_signal_push.py --signal-type waterline --target both --dry-run
+python bottom_divergence_signal_push.py --timeframe 4h --dry-run
+python waterline_signal_push.py --alert-stage signal-day --dry-run
+python waterline_signal_push.py --alert-stage trade-day --dry-run
 ```
 
 Large alert batches are split into message chunks. Runtime logs include:
@@ -407,13 +426,15 @@ Feishu runs use the same flow with `feishu_*` log prefixes. Each successfully se
 Force resend:
 
 ```bash
-python discord_signal_push.py --timeframe 4h --force
+python bottom_divergence_signal_push.py --timeframe 4h --force
+python waterline_signal_push.py --alert-stage signal-day --force
 ```
 
 Clear the alert dedupe cache without sending alerts:
 
 ```bash
-python discord_signal_push.py --clear-cache
+python bottom_divergence_signal_push.py --clear-cache
+python waterline_signal_push.py --clear-cache
 ```
 
 ## Full Automation
@@ -431,13 +452,13 @@ Example:
 ```cron
 TZ=America/New_York
 # 4h midday bar: market 09:30-13:30, run after 13:30 ET.
-45 13 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
+45 13 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
 
 # 4h close bar: run after market close.
-20 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
+20 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
 
 # Daily bar: run after market close and after the 4h close job.
-40 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python discord_signal_push.py --timeframe 1day >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
+40 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 1day >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
 
 # Off-hours split-adjustment maintenance. Runs after Twelve Data corporate-action updates are likely to have settled.
 30 3 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
@@ -478,7 +499,9 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 /data/UpBottom/outputs/stocks/stock_metadata.csv
 /data/UpBottom/outputs/stocks/split_jump_repairs.csv
 /data/UpBottom/outputs/stocks/discord_push_cache.json
+/data/UpBottom/outputs/stocks/waterline_push_cache.json
 /data/UpBottom/outputs/stocks/charts/    # only when --render-charts is used
+/data/UpBottom/outputs/stocks/waterline_candidates.csv
 /data/UpBottom/outputs/stocks/waterline_entries.csv
 ```
 
@@ -518,5 +541,6 @@ Run waterline entry scan:
 
 ```bash
 python waterline_signal.py --symbols MU
-python discord_signal_push.py --signal-type waterline --target both
+python waterline_signal_push.py --alert-stage signal-day
+python waterline_signal_push.py --alert-stage trade-day
 ```
