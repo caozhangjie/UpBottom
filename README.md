@@ -320,7 +320,7 @@ Alert delivery is intentionally separate from signal calculation:
 - Alert scripts do not calculate entries, exits, returns, position state, or portfolio statistics.
 - Keep operational alert dedupe caches separate from research outputs.
 
-After the scan, push alerts:
+After the bottom-divergence scan, push alerts:
 
 ```bash
 python discord_signal_push.py --timeframe 4h
@@ -329,7 +329,15 @@ python discord_signal_push.py --timeframe 1day --target feishu
 python discord_signal_push.py --timeframe 1day --target both
 ```
 
-`--target discord` is the default. Use `--target both` on the server when you want Discord and Feishu to receive the same alert batch.
+After generating `waterline_entries.csv`, push waterline alerts with the same delivery mechanism:
+
+```bash
+python discord_signal_push.py --signal-type waterline
+python discord_signal_push.py --signal-type waterline --target feishu
+python discord_signal_push.py --signal-type waterline --target both
+```
+
+`--signal-type bottom` is the default, so existing bottom-divergence commands do not need to change. `--target discord` is the default. Use `--target both` on the server when you want Discord and Feishu to receive the same alert batch.
 
 Server credentials can be configured in `credentials.py` or environment variables:
 
@@ -338,7 +346,7 @@ DISCORD_WEBHOOK_URL = "your_discord_webhook_url"
 FEISHU_WEBHOOK_URL = "your_feishu_webhook_url"
 ```
 
-Candidate rule:
+Bottom-divergence candidate rule:
 
 ```text
 BM break exists
@@ -359,6 +367,12 @@ Cache key:
 symbol | timeframe | golden_A_time | golden_B_time | BM_break_time
 ```
 
+Waterline cache key:
+
+```text
+target | waterline | symbol | signal_date | trade_date | entry_time
+```
+
 Alert messages include stock ID, English name, sector/sub-industry, structure points, and a Chinese progress label:
 
 ```text
@@ -370,10 +384,13 @@ Alert messages include stock ID, English name, sector/sub-industry, structure po
 
 Chinese stock names are not included in alert messages.
 
+Waterline alert messages include stock ID, English name, sector/sub-industry, signal day, volume ratio, trade day, minute waterline ratio, and entry confirmation price.
+
 Preview without sending:
 
 ```bash
 python discord_signal_push.py --timeframe 4h --dry-run
+python discord_signal_push.py --signal-type waterline --target both --dry-run
 ```
 
 Large alert batches are split into message chunks. Runtime logs include:
@@ -501,4 +518,5 @@ Run waterline entry scan:
 
 ```bash
 python waterline_signal.py --symbols MU
+python discord_signal_push.py --signal-type waterline --target both
 ```
