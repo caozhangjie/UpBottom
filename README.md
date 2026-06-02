@@ -342,7 +342,7 @@ python bottom_divergence_d_trigger_push.py
 python bottom_divergence_d_trigger_push.py --target both
 ```
 
-`bottom_divergence_d_trigger_push.py` defaults to `--timeframe 1day --date today`, where `today` is America/New_York today. Use `--date latest` to preview or backfill the latest D date in `ad_signals.csv`, or `--date YYYY-MM-DD` for an exact trading date.
+`bottom_divergence_d_trigger_push.py` defaults to `--timeframe 1day --date today`, where `today` is America/New_York today, not the server's local date. This is intentional for a Beijing-time server: when the job runs around 04:30-05:30 Beijing time after the US close, the selected US market date is usually the previous Beijing calendar date. Use `--date latest` to preview or backfill the latest D date in `ad_signals.csv`, or `--date YYYY-MM-DD` for an exact trading date.
 
 After generating waterline CSVs, push waterline alerts with the separate waterline pusher:
 
@@ -466,7 +466,7 @@ python waterline_signal_push.py --clear-cache
 
 ## Full Automation
 
-Recommended crontab uses New York time so market close timing automatically follows daylight saving time.
+Recommended crontab below assumes the server crontab runs in Beijing time and does not support `CRON_TZ`. The alert code itself uses America/New_York where market-date filtering matters, especially for daily D second-breakout confirmations.
 
 Edit crontab:
 
@@ -477,22 +477,25 @@ crontab -e
 Example:
 
 ```cron
-TZ=America/New_York
-# 4h midday bar: market 09:30-13:30, run after 13:30 ET.
-45 13 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
+# US daylight-saving time example, interpreted by a Beijing-time crontab.
+# 4h midday bar: US market 09:30-13:30 ET, run after 13:30 ET / 01:30 Beijing next day.
+45 1 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
 
-# 4h close bar: run after market close.
-20 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
+# 4h close bar: run after US market close / about 04:00 Beijing next day during DST.
+20 4 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
 
-# Daily bar: run after market close and after the 4h close job. D confirmation is daily-close based.
-40 16 * * 1-5 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 1day && python bottom_divergence_d_trigger_push.py >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
+# Daily bar: run after US market close and after the 4h close job. D confirmation is daily-close based.
+# bottom_divergence_d_trigger_push.py uses America/New_York today, so this selects the just-closed US trading date.
+40 4 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 1day && python bottom_divergence_d_trigger_push.py >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
 
 # Off-hours split-adjustment maintenance. Runs after Twelve Data corporate-action updates are likely to have settled.
-30 3 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
+30 15 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
 
-# Monthly metadata refresh: first Sunday of each month.
-15 10 1-7 * 0 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
+# Monthly metadata refresh: first Sunday of each month, Beijing time.
+15 22 1-7 * 0 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
 ```
+
+During US standard time, shift the first three Beijing-time jobs one hour later (`02:45`, `05:20`, `05:40`) and the split-maintenance job to about `16:30`.
 
 Create the log directory once:
 
