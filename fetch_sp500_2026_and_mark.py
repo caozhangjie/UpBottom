@@ -57,7 +57,7 @@ except ImportError:
 
 
 RUNTIME_ROOT = Path(os.environ.get("UPBOTTOM_RUNTIME_ROOT") or "/data/UpBottom")
-DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks_2025_10")
+DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks")
 DATA_ROOT = RUNTIME_ROOT / "data" / DATASET_NAME
 OUTPUT_ROOT = RUNTIME_ROOT / "outputs" / DATASET_NAME
 CHART_ROOT = OUTPUT_ROOT / "charts"

@@ -81,11 +81,11 @@ STOCK_CN_NAMES = {
 
 `credentials.py` is git-ignored.
 
-The code lives in `/root/UpBottom` by default. Runtime data and outputs live separately under `/data/UpBottom` by default. The default dataset name is `stocks_2025_10`, and the default start date is `2025-10-01`. Runtime outputs go under:
+The code lives in `/root/UpBottom` by default. Runtime data and outputs live separately under `/data/UpBottom` by default. The default dataset name is `stocks`, and the default start date is `2025-10-01`. Runtime outputs go under:
 
 ```text
-/data/UpBottom/data/stocks_2025_10/
-/data/UpBottom/outputs/stocks_2025_10/
+/data/UpBottom/data/stocks/
+/data/UpBottom/outputs/stocks/
 ```
 
 If you intentionally want a different runtime data/output root, set:
@@ -151,13 +151,13 @@ The State Street SPY holdings source is an ETF-holdings proxy, not an official S
 For the default S&P 500-compatible universe, metadata is cached in:
 
 ```text
-/data/UpBottom/outputs/stocks_2025_10/sp500_metadata.csv
+/data/UpBottom/outputs/stocks/sp500_metadata.csv
 ```
 
 For custom lists, metadata is cached in:
 
 ```text
-/data/UpBottom/outputs/stocks_2025_10/stock_metadata.csv
+/data/UpBottom/outputs/stocks/stock_metadata.csv
 ```
 
 ## Data Cache
@@ -212,7 +212,7 @@ python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --worke
 This does not call Twelve Data's paid `/splits_calendar` endpoint. It checks the already-downloaded 1day cache for adjacent close jumps of `8x` or more, then fully refreshes only affected symbols. Repair details are written to:
 
 ```text
-/data/UpBottom/outputs/stocks_2025_10/split_jump_repairs.csv
+/data/UpBottom/outputs/stocks/split_jump_repairs.csv
 ```
 
 Fast local rescan without downloading:
@@ -243,10 +243,10 @@ If no Chinese font is found, the script still renders charts but prints `chart_f
 Charts are written to:
 
 ```text
-/data/UpBottom/outputs/stocks_2025_10/charts/
+/data/UpBottom/outputs/stocks/charts/
 ```
 
-The scan CSV always writes `/data/UpBottom/outputs/stocks_2025_10/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
+The scan CSV always writes `/data/UpBottom/outputs/stocks/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
 
 ## Waterline Signals
 
@@ -259,9 +259,9 @@ Waterline is a separate signal model from the bottom-divergence scanner:
 Required local data layout:
 
 ```text
-/data/UpBottom/data/stocks_2025_10/1day/{SYMBOL}_1day_indicators.csv
-/data/UpBottom/data/stocks_2025_10/1min/{SYMBOL}_1min_indicators.csv
-/data/UpBottom/data/stocks_2025_10/1h/{SYMBOL}_1h_indicators.csv
+/data/UpBottom/data/stocks/1day/{SYMBOL}_1day_indicators.csv
+/data/UpBottom/data/stocks/1min/{SYMBOL}_1min_indicators.csv
+/data/UpBottom/data/stocks/1h/{SYMBOL}_1h_indicators.csv
 ```
 
 All CSVs use the same columns as the existing OHLCV cache:
@@ -302,7 +302,7 @@ python waterline_signal.py --symbols-file symbols_us_1610.csv
 Output:
 
 ```text
-/data/UpBottom/outputs/stocks_2025_10/waterline_entries.csv
+/data/UpBottom/outputs/stocks/waterline_entries.csv
 ```
 
 Important columns:
@@ -358,7 +358,7 @@ and not STRUCTURE_FAILED
 Push dedupe cache:
 
 ```text
-/data/UpBottom/outputs/stocks_2025_10/discord_push_cache.json
+/data/UpBottom/outputs/stocks/discord_push_cache.json
 ```
 
 Cache key:
@@ -472,14 +472,14 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 ## Outputs
 
 ```text
-/data/UpBottom/data/stocks_2025_10/{1day,4h}/
-/data/UpBottom/outputs/stocks_2025_10/ad_signals.csv
-/data/UpBottom/outputs/stocks_2025_10/sp500_metadata.csv
-/data/UpBottom/outputs/stocks_2025_10/stock_metadata.csv
-/data/UpBottom/outputs/stocks_2025_10/split_jump_repairs.csv
-/data/UpBottom/outputs/stocks_2025_10/discord_push_cache.json
-/data/UpBottom/outputs/stocks_2025_10/charts/    # only when --render-charts is used
-/data/UpBottom/outputs/stocks_2025_10/waterline_entries.csv
+/data/UpBottom/data/stocks/{1day,4h}/
+/data/UpBottom/outputs/stocks/ad_signals.csv
+/data/UpBottom/outputs/stocks/sp500_metadata.csv
+/data/UpBottom/outputs/stocks/stock_metadata.csv
+/data/UpBottom/outputs/stocks/split_jump_repairs.csv
+/data/UpBottom/outputs/stocks/discord_push_cache.json
+/data/UpBottom/outputs/stocks/charts/    # only when --render-charts is used
+/data/UpBottom/outputs/stocks/waterline_entries.csv
 ```
 
 ## Useful Commands

@@ -27,7 +27,7 @@ from typing import Iterable
 
 
 RUNTIME_ROOT = Path(os.environ.get("UPBOTTOM_RUNTIME_ROOT") or "/data/UpBottom")
-DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks_2025_10")
+DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks")
 OUTPUT_ROOT = RUNTIME_ROOT / "outputs" / DATASET_NAME
 SIGNALS_PATH = OUTPUT_ROOT / "ad_signals.csv"
 WATERLINE_SIGNALS_PATH = OUTPUT_ROOT / "waterline_entries.csv"
