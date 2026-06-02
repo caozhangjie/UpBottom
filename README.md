@@ -3,7 +3,7 @@
 UpBottom is a research tool for finding bottom-divergence reversal structures in stock OHLCV data. It is not a trading bot, backtest engine, or investment advice system.
 
 ```text
-download OHLCV data -> merge/dedupe local cache -> scan bottom divergence -> export CSV -> optional chart validation -> push Discord alerts
+download OHLCV data -> merge/dedupe local cache -> scan signals -> export CSV -> optional chart validation -> push Discord/Feishu alerts
 ```
 
 ## Model
@@ -83,7 +83,7 @@ STOCK_CN_NAMES = {
 
 `credentials.py` is git-ignored.
 
-The code lives in `/root/UpBottom` by default. Runtime data and outputs live separately under `/data/UpBottom` by default. The default dataset name is `stocks`, and the default start date is `2025-10-01`. Runtime outputs go under:
+The code lives in `/root/UpBottom` by default. Runtime data and outputs live separately under `/data/UpBottom` by default. The default dataset name is `stocks`, and the current production start date is `2024-01-01`. Runtime outputs go under:
 
 ```text
 /data/UpBottom/data/stocks/
@@ -121,7 +121,7 @@ python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv
 The checked-in US 1610 universe is ready to use:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --symbols-file symbols_us_1610.csv --start 2025-10-01 --overlap-days 10 --workers 2
+python fetch_sp500_2026_and_mark.py --symbols-file symbols_us_1610.csv --start 2024-01-01 --overlap-days 10 --workers 2
 ```
 
 To rebuild that list from `us_1610_stock_universe.csv` and fresh Nasdaq metadata:
@@ -185,10 +185,10 @@ python fetch_sp500_2026_and_mark.py --overlap-days 10
 
 This fills recent gaps and refreshes revised latest bars without re-downloading the full history every run.
 
-For the initial default S&P 500-compatible cache from `2025-10-01`, run once without `--skip-fetch`:
+For the initial default S&P 500-compatible cache from `2024-01-01`, run once without `--skip-fetch`:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2
+python fetch_sp500_2026_and_mark.py --start 2024-01-01 --refresh-metadata --overlap-days 10 --workers 2
 ```
 
 This command uses S&P 500 because `--universe-source sp500` is the default.
@@ -196,7 +196,7 @@ This command uses S&P 500 because `--universe-source sp500` is the default.
 For a custom universe:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2025-10-01 --overlap-days 10 --workers 2
+python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2024-01-01 --overlap-days 10 --workers 2
 ```
 
 To download only selected intervals, pass `--fetch-timeframes`:
@@ -208,7 +208,7 @@ python fetch_sp500_2026_and_mark.py --start 2024-01-01 --fetch-timeframes 1day -
 Off-hours split-adjustment maintenance:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps
+python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 --repair-split-jumps
 ```
 
 This does not call Twelve Data's paid `/splits_calendar` endpoint. It checks the already-downloaded 1day cache for adjacent close jumps of `8x` or more, then fully refreshes only affected symbols. Repair details are written to:
@@ -265,6 +265,8 @@ Required local data layout:
 /data/UpBottom/data/stocks/1min/{SYMBOL}_1min_indicators.csv
 /data/UpBottom/data/stocks/1h/{SYMBOL}_1h_indicators.csv
 ```
+
+The daily automation reuses the bottom-divergence fetch and does not fetch 1min data again. If local 1min data is missing, `waterline_signal.py` can still write signal-day candidates, but trade-day entries will be empty until minute data is available.
 
 All CSVs use the same columns as the existing OHLCV cache:
 
@@ -478,21 +480,25 @@ Example:
 
 ```cron
 # US daylight-saving time example, interpreted by a Beijing-time crontab.
+# No TZ/CRON_TZ line is used here because this server's cron scheduler runs in Beijing time.
+# Python uses the explicit Miniconda environment at /root/miniconda3/envs/myenv.
+#
 # 4h midday bar: US market 09:30-13:30 ET, run after 13:30 ET / 01:30 Beijing next day.
-45 1 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
+45 1 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 && /root/miniconda3/envs/myenv/bin/python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
 
 # 4h close bar: run after US market close / about 04:00 Beijing next day during DST.
-20 4 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
+20 4 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 && /root/miniconda3/envs/myenv/bin/python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
 
-# Daily bar: run after US market close and after the 4h close job. D confirmation is daily-close based.
+# Daily bar: shared daily fetch, bottom-divergence daily alerts, D confirmation, and waterline alerts.
 # bottom_divergence_d_trigger_push.py uses America/New_York today, so this selects the just-closed US trading date.
-40 4 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 && python bottom_divergence_signal_push.py --timeframe 1day && python bottom_divergence_d_trigger_push.py >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
+# waterline_signal.py does not repeat the bottom-divergence fetch; trade-day confirmation requires local 1min data.
+40 4 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 && /root/miniconda3/envs/myenv/bin/python bottom_divergence_signal_push.py --timeframe 1day && /root/miniconda3/envs/myenv/bin/python bottom_divergence_d_trigger_push.py && /root/miniconda3/envs/myenv/bin/python waterline_signal.py --symbols-file symbols_us_1610.csv && /root/miniconda3/envs/myenv/bin/python waterline_signal_push.py --alert-stage signal-day && /root/miniconda3/envs/myenv/bin/python waterline_signal_push.py --alert-stage trade-day >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
 
 # Off-hours split-adjustment maintenance. Runs after Twelve Data corporate-action updates are likely to have settled.
-30 15 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
+30 15 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
 
 # Monthly metadata refresh: first Sunday of each month, Beijing time.
-15 22 1-7 * 0 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
+15 22 1-7 * 0 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --refresh-metadata --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
 ```
 
 During US standard time, shift the first three Beijing-time jobs one hour later (`02:45`, `05:20`, `05:40`) and the split-maintenance job to about `16:30`.
@@ -503,10 +509,10 @@ Create the log directory once:
 mkdir -p /data/UpBottom/logs
 ```
 
-For a custom universe, add `--symbols-file /data/UpBottom/symbols.csv` to each `fetch_sp500_2026_and_mark.py` command. If you want the custom universe to have separate cache/output files, set a different dataset:
+For a custom universe, add `--symbols-file /data/UpBottom/symbols.csv` to each `fetch_sp500_2026_and_mark.py` command and to the daily `waterline_signal.py` command. If you want the custom universe to have separate cache/output files, set a different dataset:
 
 ```cron
-UPBOTTOM_DATASET=my_universe_2025_10
+UPBOTTOM_DATASET=my_universe
 ```
 
 ## Metadata Refresh
@@ -524,6 +530,7 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 
 ```text
 /data/UpBottom/data/stocks/{1day,4h}/
+/data/UpBottom/data/stocks/{1min,1h}/     # needed only for waterline minute/hour validation
 /data/UpBottom/outputs/stocks/ad_signals.csv
 /data/UpBottom/outputs/stocks/sp500_metadata.csv
 /data/UpBottom/outputs/stocks/stock_metadata.csv
@@ -559,7 +566,7 @@ python fetch_sp500_2026_and_mark.py --provider yahoo
 Run off-hours split-adjustment repair:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps
+python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 --repair-split-jumps
 ```
 
 Render charts for manual validation:
