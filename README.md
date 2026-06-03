@@ -1,9 +1,9 @@
-# UpBottom
+﻿# UpBottom
 
 UpBottom is a research tool for finding bottom-divergence reversal structures in stock OHLCV data. It is not a trading bot, backtest engine, or investment advice system.
 
 ```text
-download OHLCV data -> merge/dedupe local cache -> scan signals -> export CSV -> optional chart validation -> push Discord/Feishu alerts
+download OHLCV data -> merge/dedupe local cache -> scan bottom divergence -> export CSV -> optional chart validation -> push Discord alerts
 ```
 
 ## Model
@@ -43,10 +43,14 @@ Corporate action guard:
 
 - `fetch_sp500_2026_and_mark.py`: main data/update/scan pipeline. Despite the historical filename, it now supports both the default S&P 500 universe and custom stock lists. PNG charts are optional manual validation output.
 - `ad_structure_v05_core.py`: scanner and structure evaluator.
-- `bottom_divergence_signal_push.py`: pushes bottom-divergence BM-break alerts to Discord/Feishu with local dedupe cache.
-- `bottom_divergence_d_trigger_push.py`: pushes daily bottom-divergence D second-breakout confirmations after the daily close.
+- `discord_signal_push.py`: legacy BM-break alert pusher kept for rollback/comparison.
+- `daily_workflow.py`: scheduled daily workflow for fetch/scan, temporary 1min download, Feishu pushes, and tmp cleanup.
+- `waterline_push.py`: Feishu pusher for waterline signal-day and trade-day confirmations.
+- `bottom_history_push.py`: Feishu pusher for historical bottom-divergence BM-break structures.
+- `bottom_trade_push.py`: Feishu pusher for bottom-divergence BM-break buy/sell signals.
+- `bottom_common.py`, `push_utils.py`, `intraday_tmp.py`: shared push helpers.
 - `waterline_signal.py`: independent waterline entry-signal scanner. It does not import or modify bottom-divergence recognition logic.
-- `waterline_signal_push.py`: pushes waterline signal-day and trade-day alerts. It does not import or modify bottom-divergence recognition logic.
+- `waterline_strategy.py`: independent waterline strategy backtest. It consumes `waterline_signal.py` entries and manages anchors/exits.
 - `credentials.example.py`: local credential template.
 - `requirements.txt`: cloud/local Python dependencies.
 - `symbols.example.csv`: example custom stock universe file.
@@ -75,6 +79,11 @@ Copy your private `credentials.py` into the project root on the cloud machine:
 TWELVE_DATA_API_KEY = "your_twelve_data_api_key"
 DISCORD_WEBHOOK_URL = "your_discord_webhook_url"
 FEISHU_WEBHOOK_URL = "your_feishu_webhook_url"
+FEISHU_WEBHOOK_WATERLINE_SIGNAL = "your_waterline_signal_day_feishu_webhook_url"
+FEISHU_WEBHOOK_WATERLINE_TRADE = "your_waterline_trade_day_feishu_webhook_url"
+FEISHU_WEBHOOK_BOTTOM_HISTORY = "your_bottom_history_feishu_webhook_url"
+FEISHU_WEBHOOK_BOTTOM_BUY = "your_bottom_buy_feishu_webhook_url"
+FEISHU_WEBHOOK_BOTTOM_SELL = "your_bottom_sell_feishu_webhook_url"
 
 STOCK_CN_NAMES = {
     "AAPL": "苹果",
@@ -83,11 +92,13 @@ STOCK_CN_NAMES = {
 
 `credentials.py` is git-ignored.
 
-The code lives in `/root/UpBottom` by default. Runtime data and outputs live separately under `/data/UpBottom` by default. The default dataset name is `stocks`, and the current production start date is `2024-01-01`. Runtime outputs go under:
+The code lives in `/root/UpBottom` by default. Runtime data and outputs live separately under `/data/UpBottom` by default. Runtime data no longer uses a dataset directory layer. The default start date is `2025-10-01`.
 
 ```text
-/data/UpBottom/data/stocks/
-/data/UpBottom/outputs/stocks/
+/data/UpBottom/data/1day/
+/data/UpBottom/data/4h/          # optional; not fetched by the default daily workflow
+/data/UpBottom/outputs/
+/data/UpBottom/tmp/1min/
 ```
 
 If you intentionally want a different runtime data/output root, set:
@@ -96,11 +107,7 @@ If you intentionally want a different runtime data/output root, set:
 export UPBOTTOM_RUNTIME_ROOT="/your/data/path/UpBottom"
 ```
 
-You can also separate different universes with:
-
-```bash
-export UPBOTTOM_DATASET="my_universe_2025_10"
-```
+Do not store long-term 1min data under `/data/UpBottom/data`. The daily workflow downloads required 1min bars into `/data/UpBottom/tmp/1min/`, shares them across the waterline and bottom-trade push steps, and deletes them after the workflow finishes.
 
 ## Stock Universe
 
@@ -121,7 +128,7 @@ python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv
 The checked-in US 1610 universe is ready to use:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --symbols-file symbols_us_1610.csv --start 2024-01-01 --overlap-days 10 --workers 2
+python fetch_sp500_2026_and_mark.py --symbols-file symbols_us_1610.csv --start 2025-10-01 --overlap-days 10 --workers 2
 ```
 
 To rebuild that list from `us_1610_stock_universe.csv` and fresh Nasdaq metadata:
@@ -153,13 +160,13 @@ The State Street SPY holdings source is an ETF-holdings proxy, not an official S
 For the default S&P 500-compatible universe, metadata is cached in:
 
 ```text
-/data/UpBottom/outputs/stocks/sp500_metadata.csv
+/data/UpBottom/outputs/sp500_metadata.csv
 ```
 
 For custom lists, metadata is cached in:
 
 ```text
-/data/UpBottom/outputs/stocks/stock_metadata.csv
+/data/UpBottom/outputs/stock_metadata.csv
 ```
 
 ## Data Cache
@@ -185,10 +192,10 @@ python fetch_sp500_2026_and_mark.py --overlap-days 10
 
 This fills recent gaps and refreshes revised latest bars without re-downloading the full history every run.
 
-For the initial default S&P 500-compatible cache from `2024-01-01`, run once without `--skip-fetch`:
+For the initial default S&P 500-compatible cache from `2025-10-01`, run once without `--skip-fetch`:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --start 2024-01-01 --refresh-metadata --overlap-days 10 --workers 2
+python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2
 ```
 
 This command uses S&P 500 because `--universe-source sp500` is the default.
@@ -196,7 +203,7 @@ This command uses S&P 500 because `--universe-source sp500` is the default.
 For a custom universe:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2024-01-01 --overlap-days 10 --workers 2
+python fetch_sp500_2026_and_mark.py --symbols-file symbols.csv --start 2025-10-01 --overlap-days 10 --workers 2
 ```
 
 To download only selected intervals, pass `--fetch-timeframes`:
@@ -205,16 +212,18 @@ To download only selected intervals, pass `--fetch-timeframes`:
 python fetch_sp500_2026_and_mark.py --start 2024-01-01 --fetch-timeframes 1day --workers 2
 ```
 
+The scheduled daily workflow currently fetches only `1day` by default. To temporarily restore 4h fetching, pass `--fetch-timeframes 1day 4h` to `daily_workflow.py`; to push 4h historical BM-break structures manually, pass `--timeframes 1day 4h` to `bottom_history_push.py`.
+
 Off-hours split-adjustment maintenance:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 --repair-split-jumps
+python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps
 ```
 
 This does not call Twelve Data's paid `/splits_calendar` endpoint. It checks the already-downloaded 1day cache for adjacent close jumps of `8x` or more, then fully refreshes only affected symbols. Repair details are written to:
 
 ```text
-/data/UpBottom/outputs/stocks/split_jump_repairs.csv
+/data/UpBottom/outputs/split_jump_repairs.csv
 ```
 
 Fast local rescan without downloading:
@@ -245,34 +254,77 @@ If no Chinese font is found, the script still renders charts but prints `chart_f
 Charts are written to:
 
 ```text
-/data/UpBottom/outputs/stocks/charts/
+/data/UpBottom/outputs/charts/
 ```
 
-The scan CSV always writes `/data/UpBottom/outputs/stocks/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
+The scan CSV always writes `/data/UpBottom/outputs/ad_signals.csv`. Its `chart_file` column is populated only when `--render-charts` is used.
 
-## Waterline Signals
+## Waterline Strategy
 
-Waterline is a separate signal model from the bottom-divergence scanner:
+Waterline is a separate research strategy from the bottom-divergence scanner. Keep signal detection and strategy execution separate:
 
 - `waterline_signal.py` finds entry candidates only.
-- It does not calculate exits, returns, position state, or portfolio statistics.
-- It does not change `ad_structure_v05_core.py` or the bottom-divergence scan pipeline.
+- `waterline_strategy.py` consumes those candidates and manages holding, anchor updates, and exits.
+- Neither file changes `ad_structure_v05_core.py` or the bottom-divergence scan pipeline.
 
 Required local data layout:
 
 ```text
-/data/UpBottom/data/stocks/1day/{SYMBOL}_1day_indicators.csv
-/data/UpBottom/data/stocks/1min/{SYMBOL}_1min_indicators.csv
-/data/UpBottom/data/stocks/1h/{SYMBOL}_1h_indicators.csv
+/data/UpBottom/data/1day/{SYMBOL}_1day_indicators.csv
+/data/UpBottom/tmp/1min/{SYMBOL}_1min_indicators.csv
+/data/UpBottom/data/1h/{SYMBOL}_1h_indicators.csv
 ```
-
-The daily automation reuses the bottom-divergence fetch and does not fetch 1min data again. If local 1min data is missing, `waterline_signal.py` can still write signal-day candidates, but trade-day entries will be empty until minute data is available.
 
 All CSVs use the same columns as the existing OHLCV cache:
 
 ```csv
 datetime,open,high,low,close,volume
 ```
+
+The recommended research flow is on-demand, so you do not need to download 1min/1h data for the whole universe:
+
+```text
+daily data -> find signal-day candidates
+candidate D+1 only -> download 1min bars -> confirm entry
+confirmed entries only -> download later 1min and 1h bars -> backtest exit/anchors
+```
+
+`waterline_on_demand.py` processes symbols concurrently with `--workers`, but each symbol is handled in chronological order. If a later signal falls inside the same symbol's active holding period, that signal is skipped. This keeps per-symbol trades non-overlapping while still allowing multiple symbols to run in parallel.
+
+Run the on-demand pipeline:
+
+```bash
+python waterline_on_demand.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/us_1610_2024_01_daily/1day \
+  --data-root /data/UpBottom/data/waterline_on_demand \
+  --output-dir /data/UpBottom/outputs/waterline_on_demand \
+  --start 2024-01-01
+```
+
+For a smaller first pass, limit the symbol set:
+
+```bash
+python waterline_on_demand.py \
+  --symbols AAPL MSFT NVDA \
+  --daily-dir /data/UpBottom/data/us_1610_2024_01_daily/1day \
+  --data-root /data/UpBottom/data/waterline_on_demand \
+  --output-dir /data/UpBottom/outputs/waterline_on_demand_smoke \
+  --start 2025-01-01 \
+  --end 2026-07-01 \
+  --workers 2
+```
+
+This writes:
+
+```text
+waterline_candidates.csv
+waterline_entries.csv
+waterline_trades.csv
+waterline_half_year_summary.csv
+```
+
+### Waterline Entry Signal
 
 Signal day `D`:
 
@@ -306,65 +358,135 @@ python waterline_signal.py --symbols-file symbols_us_1610.csv
 Output:
 
 ```text
-/data/UpBottom/outputs/stocks/waterline_candidates.csv
-/data/UpBottom/outputs/stocks/waterline_entries.csv
+/data/UpBottom/outputs/waterline_entries.csv
 ```
 
 Important columns:
 
 ```text
-waterline_candidates.csv:
-symbol, signal_date, signal_close, volume_ratio, trade_date, trade_close
+symbol, signal_date, signal_close, volume_ratio, trade_date,
+minute_above_ratio, entry_time, entry_price
+```
 
-waterline_entries.csv:
-symbol, signal_date, signal_close, volume_ratio, trade_date, minute_above_ratio, entry_time, entry_price
+### Waterline Strategy
+
+Initial anchor:
+
+```text
+anchor_price = signal_day.close
+```
+
+Daily exit rule after entry:
+
+```text
+below_ratio = count(day minute close < anchor_price) / count(day minute bars)
+exit if below_ratio >= 0.5
+exit_price = that day's daily close
+```
+
+Alternative MA5/signal-close exit rule:
+
+```text
+ma5_price = mean(close of the previous 5 completed trading days)
+ma5_below_ratio = count(day minute close < ma5_price) / count(day minute bars)
+signal_below_ratio = count(day minute close < signal_day.close) / count(day minute bars)
+exit if ma5_below_ratio >= 0.5 or signal_below_ratio >= 0.5
+exit_price = that day's daily close
+```
+
+Use it with:
+
+```bash
+python waterline_strategy.py --exit-rule ma5-or-signal
+python waterline_on_demand.py ... --exit-rule ma5-or-signal
+```
+
+Anchor upgrade uses 1h closes:
+
+```text
+advance_pct = 0.15
+define_bars = 15
+confirm_bars = 30
+```
+
+When 15 consecutive 1h bars define a candidate box:
+
+```text
+box_high = max(close over the 15 bars)
+box_low = min(close over the 15 bars)
+```
+
+The box is eligible only when:
+
+```text
+box_high >= current_anchor * 1.15
+```
+
+Then the next 30 consecutive 1h closes must all stay inside:
+
+```text
+box_low <= close_1h <= box_high
+```
+
+If confirmed:
+
+```text
+anchor_price = box_low
+```
+
+The implementation treats anchors as one-way structural stops: a confirmed `box_low` raises the anchor only when it is above the current anchor. It does not lower an existing anchor.
+
+If a confirmation close breaks below `box_low`, the candidate box fails. If it closes above `box_high`, the stock is treated as continuing higher; the old anchor remains and the strategy keeps looking for a new eligible platform.
+
+Each row in `waterline_entries.csv` is backtested independently in the first version. Position netting and portfolio-level capital allocation are intentionally out of scope.
+
+Run after generating entries:
+
+```bash
+python waterline_strategy.py
+```
+
+Output:
+
+```text
+/data/UpBottom/outputs/waterline_trades.csv
+```
+
+Important columns:
+
+```text
+symbol, trade_date, entry_price, initial_anchor, final_anchor,
+anchor_updates, exit_date, exit_price, exit_below_ratio, return_pct, status
 ```
 
 ## Alerts
 
-Alert delivery is intentionally separate from signal calculation:
+Alert delivery is intentionally separate from strategy backtesting:
 
 - Alert scripts only read scanner output such as `ad_signals.csv`, format structure progress, and send notifications.
 - Alert scripts do not calculate entries, exits, returns, position state, or portfolio statistics.
-- Keep operational alert dedupe caches separate from research outputs.
+- Strategy backtests read signal/price data and write research CSVs. They do not send Discord or Feishu messages.
+- Keep operational alert dedupe caches separate from research trade outputs.
 
-After the bottom-divergence scan, push alerts:
-
-```bash
-python bottom_divergence_signal_push.py --timeframe 4h
-python bottom_divergence_signal_push.py --timeframe 1day
-python bottom_divergence_signal_push.py --timeframe 1day --target feishu
-python bottom_divergence_signal_push.py --timeframe 1day --target both
-```
-
-After the daily scan, push daily close-confirmed D second-breakout alerts:
+After the scan, push alerts:
 
 ```bash
-python bottom_divergence_d_trigger_push.py
-python bottom_divergence_d_trigger_push.py --target both
+python discord_signal_push.py --timeframe 4h
+python discord_signal_push.py --timeframe 1day
+python discord_signal_push.py --timeframe 1day --target feishu
+python discord_signal_push.py --timeframe 1day --target both
 ```
 
-`bottom_divergence_d_trigger_push.py` defaults to `--timeframe 1day --date today`, where `today` is America/New_York today, not the server's local date. This is intentional for a Beijing-time server: when the job runs around 04:30-05:30 Beijing time after the US close, the selected US market date is usually the previous Beijing calendar date. Use `--date latest` to preview or backfill the latest D date in `ad_signals.csv`, or `--date YYYY-MM-DD` for an exact trading date.
-
-After generating waterline CSVs, push waterline alerts with the separate waterline pusher:
-
-```bash
-python waterline_signal_push.py --alert-stage signal-day
-python waterline_signal_push.py --alert-stage trade-day
-```
-
-`bottom_divergence_signal_push.py` defaults to Discord. `waterline_signal_push.py` defaults to Feishu because the current workflow uses dedicated Feishu groups for waterline signal-day and trade-day alerts. Use `--target both` only when you also want Discord copies.
+`--target discord` is the default. Use `--target both` on the server when you want Discord and Feishu to receive the same alert batch.
 
 Server credentials can be configured in `credentials.py` or environment variables:
 
 ```python
 DISCORD_WEBHOOK_URL = "your_discord_webhook_url"
 FEISHU_WEBHOOK_URL = "your_feishu_webhook_url"
-WATERLINE_SIGNAL_FEISHU_WEBHOOK_URL = "your_waterline_signal_day_feishu_webhook_url"
-WATERLINE_TRADE_FEISHU_WEBHOOK_URL = "your_waterline_trade_day_feishu_webhook_url"
 ```
 
-Bottom-divergence candidate rule:
+Candidate rule:
 
 ```text
 BM break exists
@@ -373,48 +495,16 @@ and not C_FAIL
 and not STRUCTURE_FAILED
 ```
 
-Bottom-divergence D confirmation rule:
-
-```text
-timeframe == 1day
-structure_status == D_TRIGGERED
-D_time date == selected --date
-```
-
 Push dedupe cache:
 
 ```text
-/data/UpBottom/outputs/stocks/discord_push_cache.json
+/data/UpBottom/outputs/discord_push_cache.json
 ```
 
 Cache key:
 
 ```text
 symbol | timeframe | golden_A_time | golden_B_time | BM_break_time
-```
-
-Waterline push dedupe cache:
-
-```text
-/data/UpBottom/outputs/stocks/waterline_push_cache.json
-```
-
-D second-breakout push dedupe cache:
-
-```text
-/data/UpBottom/outputs/stocks/bottom_divergence_d_push_cache.json
-```
-
-Waterline signal-day cache key:
-
-```text
-target | waterline-signal-day | symbol | signal_date
-```
-
-Waterline trade-day cache key:
-
-```text
-target | waterline-trade-day | symbol | signal_date | trade_date | entry_time
 ```
 
 Alert messages include stock ID, English name, sector/sub-industry, structure points, and a Chinese progress label:
@@ -428,15 +518,10 @@ Alert messages include stock ID, English name, sector/sub-industry, structure po
 
 Chinese stock names are not included in alert messages.
 
-Waterline signal-day messages include stock ID, English name, sector/sub-industry, signal day, volume ratio, and next trade day. Waterline trade-day messages include minute waterline ratio and entry confirmation price.
-
 Preview without sending:
 
 ```bash
-python bottom_divergence_signal_push.py --timeframe 4h --dry-run
-python bottom_divergence_d_trigger_push.py --dry-run
-python waterline_signal_push.py --alert-stage signal-day --dry-run
-python waterline_signal_push.py --alert-stage trade-day --dry-run
+python discord_signal_push.py --timeframe 4h --dry-run
 ```
 
 Large alert batches are split into message chunks. Runtime logs include:
@@ -453,22 +538,151 @@ Feishu runs use the same flow with `feishu_*` log prefixes. Each successfully se
 Force resend:
 
 ```bash
-python bottom_divergence_signal_push.py --timeframe 4h --force
-python bottom_divergence_d_trigger_push.py --force
-python waterline_signal_push.py --alert-stage signal-day --force
+python discord_signal_push.py --timeframe 4h --force
 ```
 
 Clear the alert dedupe cache without sending alerts:
 
 ```bash
-python bottom_divergence_signal_push.py --clear-cache
-python bottom_divergence_d_trigger_push.py --clear-cache
-python waterline_signal_push.py --clear-cache
+python discord_signal_push.py --clear-cache
+```
+
+## Strategy Backtests
+
+Backtests are research-only and live outside the alert delivery path.
+
+The implementation is in `strategy_backtest.py`. It can test bottom divergence,
+waterline, or both strategies with the same exit engine. Alert delivery stays
+separate: backtests do not send Discord/Feishu messages, and alert scripts do
+not calculate entries, exits, returns, or portfolio statistics.
+
+### Trading Rules
+
+Bottom divergence entry:
+
+```text
+Scan 1day bottom-divergence structures.
+Enter only when structure_status == D_TRIGGERED.
+D_TRIGGERED = first daily close strictly above CM_price.
+entry_date = D_time date
+entry_price = D_price
+reference_price = D_price
+```
+
+Waterline entry:
+
+```text
+Signal day:
+  close > open
+  close - low > 1.2 * max(high - close, 0)
+  volume >= mean(previous 10 daily volumes) * 2
+
+Trade day:
+  the next trading day after the signal day
+  fetch or reuse that day's 1min bars
+  above_ratio = count(1min close > signal_day.close) / count(1min bars)
+  entry if at least 300 1min bars exist and above_ratio >= 0.8
+
+entry_date = trade day
+entry_price = trade-day daily close
+reference_price = signal-day close
+```
+
+Shared exit:
+
+```text
+Start checking from the first trading day after entry.
+Use only days with at least 300 1min bars.
+
+ma5_price = mean(close of the previous 5 completed daily bars)
+ma5_below_ratio = count(day 1min close < ma5_price) / count(day 1min bars)
+reference_below_ratio = count(day 1min close < reference_price) / count(day 1min bars)
+
+Exit when ma5_below_ratio >= 0.5 or reference_below_ratio >= 0.5.
+exit_signal_date = that day
+exit_price = next trading day's daily open
+exit_rule = MA5 if both rules trigger on the same day; otherwise the triggered rule
+```
+
+Entry price modes:
+
+```text
+Default mode:
+  --entry-price-mode signal-close
+  keep the original behavior and buy at the signal confirmation day's close
+
+More realistic delayed-entry mode:
+  --entry-price-mode next-open
+  keep exactly the same signals
+  buy at the next trading day's daily open
+  keep the same reference_price and the same exit rules
+```
+
+Position handling:
+
+- Trades are processed chronologically per symbol.
+- A symbol can hold only one position per strategy at a time.
+- If a later entry signal occurs before the active trade exits, that later signal is skipped.
+- Bottom divergence and waterline are tracked independently, so each strategy has its own per-symbol position state.
+
+### Backtest Scope
+
+Backtests use `--start` as the inclusive first entry date. Use `--entry-end` to
+set an exclusive last entry date and to value open trades only before that same
+boundary. This is useful for clean calendar windows such as 2022-2023:
+
+```text
+--start 2022-01-01 --entry-end 2024-01-01 --end 2024-01-01
+```
+
+Without `--entry-end`, the backtest scans every entry from `--start` through the
+available daily cache. Half-year summaries group trades by `entry_date`.
+
+The script caches 1min bars under the selected `--data-root`, reuses cached
+trade-day minute bars before making new API calls, and skips individual fetch
+failures instead of aborting the whole batch. Fetch failures are counted in the
+final `stats=` line.
+
+Run both strategies:
+
+```bash
+python strategy_backtest.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/1day \
+  --data-root /data/UpBottom/data \
+  --output-dir /data/UpBottom/outputs \
+  --start 2024-01-01 \
+  --strategy both \
+  --workers 2
+```
+
+Run a bounded 2022-2023 window:
+
+```bash
+python strategy_backtest.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/1day \
+  --data-root /data/UpBottom/data \
+  --output-dir /data/UpBottom/outputs/backtest_2022_2023 \
+  --start 2022-01-01 \
+  --end 2024-01-01 \
+  --entry-end 2024-01-01 \
+  --strategy both \
+  --workers 2
+```
+
+Outputs:
+
+```text
+bottom_divergence_trades.csv
+bottom_divergence_half_year_summary.csv
+waterline_ma5_trades.csv
+waterline_ma5_half_year_summary.csv
 ```
 
 ## Full Automation
 
-Recommended crontab below assumes the server crontab runs in Beijing time and does not support `CRON_TZ`. The alert code itself uses America/New_York where market-date filtering matters, especially for daily D second-breakout confirmations.
+Crontab times below are Beijing time. Set the server timezone to Asia/Shanghai before installing them, or use a cron implementation that supports `CRON_TZ=Asia/Shanghai`.
 
 Edit crontab:
 
@@ -476,38 +690,35 @@ Edit crontab:
 crontab -e
 ```
 
-Example:
+Robust Feishu workflow example:
 
 ```cron
-# US daylight-saving time example, interpreted by a Beijing-time crontab.
-# No TZ/CRON_TZ line is used here because this server's cron scheduler runs in Beijing time.
-# Python uses the explicit Miniconda environment at /root/miniconda3/envs/myenv.
-#
-# 4h midday bar: US market 09:30-13:30 ET, run after 13:30 ET / 01:30 Beijing next day.
-45 1 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 && /root/miniconda3/envs/myenv/bin/python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_midday.log 2>&1
+# Beijing time. US Monday-Friday sessions are processed on Beijing Tuesday-Saturday mornings.
 
-# 4h close bar: run after US market close / about 04:00 Beijing next day during DST.
-20 4 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 && /root/miniconda3/envs/myenv/bin/python bottom_divergence_signal_push.py --timeframe 4h >> /data/UpBottom/logs/upbottom_4h_close.log 2>&1
+# Update 1day cache and rescan ad_signals.csv.
+40 5 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step fetch-scan --start 2025-10-01 --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_fetch_scan.log 2>&1
 
-# Daily bar: shared fetch for bottom-divergence daily alerts and D confirmation.
-# bottom_divergence_d_trigger_push.py uses America/New_York today, so this selects the just-closed US trading date.
-40 4 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 && /root/miniconda3/envs/myenv/bin/python bottom_divergence_signal_push.py --timeframe 1day && /root/miniconda3/envs/myenv/bin/python bottom_divergence_d_trigger_push.py >> /data/UpBottom/logs/upbottom_1day_close.log 2>&1
+# Download shared temporary 1min data once for today's waterline trade checks and bottom sell checks.
+55 5 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step prepare-tmp >> /data/UpBottom/logs/upbottom_prepare_tmp.log 2>&1
 
-# Waterline trade-day alerts. This job does not fetch data; it reads existing 1day/1min local cache.
-# waterline_signal.py writes both waterline_candidates.csv and waterline_entries.csv.
-0 5 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python waterline_signal.py --symbols-file symbols_us_1610.csv && /root/miniconda3/envs/myenv/bin/python waterline_signal_push.py --alert-stage trade-day >> /data/UpBottom/logs/waterline_trade_day.log 2>&1
+# Push daily bottom-divergence historical BM-break signals.
+00 6 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step bottom-history >> /data/UpBottom/logs/upbottom_bottom_history.log 2>&1
 
-# Waterline signal-day alerts. This only pushes the candidates generated by the 05:00 waterline scan.
-30 5 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python waterline_signal_push.py --alert-stage signal-day >> /data/UpBottom/logs/waterline_signal_day.log 2>&1
+# Push bottom-divergence BM buy/sell signals.
+30 6 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step bottom-trade >> /data/UpBottom/logs/upbottom_bottom_trade.log 2>&1
+
+# Push waterline signal-day and trade-day signals.
+30 7 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step waterline >> /data/UpBottom/logs/upbottom_waterline.log 2>&1
+
+# Cleanup temporary 1min files after all push jobs should be finished.
+00 9 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step cleanup >> /data/UpBottom/logs/upbottom_cleanup.log 2>&1
 
 # Off-hours split-adjustment maintenance. Runs after Twelve Data corporate-action updates are likely to have settled.
-30 15 * * 2-6 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
+30 16 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
 
-# Monthly metadata refresh: first Sunday of each month, Beijing time.
-15 22 1-7 * 0 cd /root/UpBottom && /root/miniconda3/envs/myenv/bin/python fetch_sp500_2026_and_mark.py --start 2024-01-01 --refresh-metadata --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
+# Monthly metadata refresh: first Sunday of each month.
+15 10 1-7 * 0 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
 ```
-
-During US standard time, shift the market-close jobs one hour later (`02:45`, `05:20`, `05:40`, `06:00`, `06:30`) and the split-maintenance job to about `16:30`.
 
 Create the log directory once:
 
@@ -515,11 +726,17 @@ Create the log directory once:
 mkdir -p /data/UpBottom/logs
 ```
 
-For a custom universe, add `--symbols-file /data/UpBottom/symbols.csv` to each `fetch_sp500_2026_and_mark.py` command and to the daily `waterline_signal.py` command. If you want the custom universe to have separate cache/output files, set a different dataset:
+For a custom universe, add `--symbols-file /data/UpBottom/symbols.csv` to the daily workflow command. The production layout uses one shared cache/output tree, so run only one universe per runtime root.
 
-```cron
-UPBOTTOM_DATASET=my_universe
+The current production layout does not use a dataset directory layer. If you are migrating from the old layout, move or copy existing files once, then keep the old directories for a few successful runs before deleting them:
+
+```bash
+mkdir -p /data/UpBottom/data /data/UpBottom/outputs
+mv /data/UpBottom/data/stocks/1day /data/UpBottom/data/
+mv /data/UpBottom/outputs/stocks/* /data/UpBottom/outputs/
 ```
+
+Do not move long-term 1min caches into `/data/UpBottom/data`; the daily workflow uses `/data/UpBottom/tmp/1min` and deletes it when all push jobs finish.
 
 ## Metadata Refresh
 
@@ -535,18 +752,15 @@ The default S&P 500-compatible universe is cached in `sp500_metadata.csv` after 
 ## Outputs
 
 ```text
-/data/UpBottom/data/stocks/{1day,4h}/
-/data/UpBottom/data/stocks/{1min,1h}/     # needed only for waterline minute/hour validation
-/data/UpBottom/outputs/stocks/ad_signals.csv
-/data/UpBottom/outputs/stocks/sp500_metadata.csv
-/data/UpBottom/outputs/stocks/stock_metadata.csv
-/data/UpBottom/outputs/stocks/split_jump_repairs.csv
-/data/UpBottom/outputs/stocks/discord_push_cache.json
-/data/UpBottom/outputs/stocks/bottom_divergence_d_push_cache.json
-/data/UpBottom/outputs/stocks/waterline_push_cache.json
-/data/UpBottom/outputs/stocks/charts/    # only when --render-charts is used
-/data/UpBottom/outputs/stocks/waterline_candidates.csv
-/data/UpBottom/outputs/stocks/waterline_entries.csv
+/data/UpBottom/data/1day/
+/data/UpBottom/data/4h/                       # optional legacy/manual cache
+/data/UpBottom/outputs/ad_signals.csv
+/data/UpBottom/outputs/sp500_metadata.csv
+/data/UpBottom/outputs/stock_metadata.csv
+/data/UpBottom/outputs/split_jump_repairs.csv
+/data/UpBottom/outputs/charts/                 # only when --render-charts is used
+/data/UpBottom/outputs/push_state/
+/data/UpBottom/tmp/1min/                       # temporary, removed by daily_workflow.py
 ```
 
 ## Useful Commands
@@ -572,7 +786,7 @@ python fetch_sp500_2026_and_mark.py --provider yahoo
 Run off-hours split-adjustment repair:
 
 ```bash
-python fetch_sp500_2026_and_mark.py --start 2024-01-01 --overlap-days 10 --workers 2 --repair-split-jumps
+python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps
 ```
 
 Render charts for manual validation:
@@ -581,10 +795,9 @@ Render charts for manual validation:
 python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
 ```
 
-Run waterline entry scan:
+Run waterline entry scan and strategy backtest:
 
 ```bash
 python waterline_signal.py --symbols MU
-python waterline_signal_push.py --alert-stage signal-day
-python waterline_signal_push.py --alert-stage trade-day
+python waterline_strategy.py
 ```

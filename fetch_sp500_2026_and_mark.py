@@ -1,9 +1,9 @@
-"""Fetch stock data, scan A-D bottom divergences, and mark charts.
+﻿"""Fetch stock data, scan A-D bottom divergences, and mark charts.
 
 Outputs:
-- {runtime_root}/data/{dataset}/{1day,4h}/{SYMBOL}_{timeframe}_indicators.csv
-- {runtime_root}/outputs/{dataset}/ad_signals.csv
-- {runtime_root}/outputs/{dataset}/charts/*.png
+- {runtime_root}/data/{1day,4h}/{SYMBOL}_{timeframe}_indicators.csv
+- {runtime_root}/outputs/ad_signals.csv
+- {runtime_root}/outputs/charts/*.png
 
 Market data can come from Yahoo Finance's chart endpoint or Twelve Data's
 time_series endpoint. Yahoo 4h is built from 1h bars; Twelve Data 4h is fetched
@@ -33,6 +33,7 @@ from threading import Lock
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
+from constants import DATA_ROOT, OUTPUT_ROOT, RUNTIME_ROOT
 from ad_structure_v05_core import (
     ABSignal,
     ADStructure,
@@ -56,10 +57,6 @@ except ImportError:
     CREDENTIALS_STOCK_CN_NAMES = {}
 
 
-RUNTIME_ROOT = Path(os.environ.get("UPBOTTOM_RUNTIME_ROOT") or "/data/UpBottom")
-DATASET_NAME = os.environ.get("UPBOTTOM_DATASET", "stocks")
-DATA_ROOT = RUNTIME_ROOT / "data" / DATASET_NAME
-OUTPUT_ROOT = RUNTIME_ROOT / "outputs" / DATASET_NAME
 CHART_ROOT = OUTPUT_ROOT / "charts"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
