@@ -15,7 +15,10 @@ The old standalone push scripts have been removed. The production system is now:
 - `bottom_history_push.py`: bottom-divergence historical BM-break push, currently 1day only.
 - `bottom_trade_push.py`: bottom-divergence BM-break buy/sell push.
 - `waterline_push.py`: waterline signal-day and trade-day push.
-- `strategy_backtest.py`: research backtest for the new BM-break and waterline systems.
+- `bottom_backtest.py`: bottom-divergence research backtest with selectable BM/C/D entry variants.
+- `waterline_backtest.py`: waterline research backtest.
+- `backtest_common.py`: shared backtest utilities for paths, symbols, 1min cache, exits, and CSV summaries.
+- `strategy_backtest.py`: compatibility wrapper for older commands.
 - `constants.py`: runtime paths and all Feishu webhook names.
 - `bottom_common.py`, `push_utils.py`, `intraday_tmp.py`: shared helpers.
 - `fetch_sp500_2026_and_mark.py`: daily data update and bottom-divergence scan.
@@ -166,15 +169,24 @@ For a custom universe, add `--symbols-file /data/UpBottom/symbols.csv` to the wo
 
 ## Backtests
 
-`strategy_backtest.py` matches the new signal system.
+Backtests are split by strategy, while shared tool code lives in `backtest_common.py`. Both backtests reuse the new runtime layout, symbol/source mapping, 1min cache downloader, MA5/reference exit rule, and CSV summary writer.
 
-Bottom BM-break entry:
+Bottom-divergence backtest supports BM/C/D entry variants:
 
 ```text
-valid BM break on 1day
-signal_date = BM_break_time date
-reference_price = BM_break_price
-default entry = next trading day open
+bm:
+  signal_date = BM_break_time date
+  reference_price = BM_break_price
+
+c:
+  signal_date = C confirmation date
+  reference_price = C confirmation close
+
+d:
+  signal_date = D_time date
+  reference_price = D_price
+
+default execution = next trading day open
 ```
 
 Waterline entry:
@@ -192,35 +204,50 @@ Shared exit is the same MA5/reference 50% minute-break rule used by push alerts.
 /data/UpBottom/outputs/backtest_minute_cache/1min/
 ```
 
-Run both strategies:
+Run bottom-divergence BM/C/D comparison:
 
 ```bash
-python strategy_backtest.py \
+python bottom_backtest.py \
   --symbols-file symbols_us_1610.csv \
   --daily-dir /data/UpBottom/data/1day \
-  --output-dir /data/UpBottom/outputs/backtests \
+  --output-dir /data/UpBottom/outputs/backtests/bottom \
   --start 2025-10-01 \
-  --strategy both
+  --entry-variants bm c d
 ```
 
-Run only the new bottom BM-break strategy without downloading missing 1min data:
+For a fair BM/C/D comparison on the same completed structures, add `--completed-only`.
+
+Run only the production-style BM entry without downloading missing 1min data:
 
 ```bash
-python strategy_backtest.py \
-  --strategy bottom \
+python bottom_backtest.py \
+  --entry-variants bm \
   --skip-download \
+  --start 2025-10-01
+```
+
+Run waterline backtest:
+
+```bash
+python waterline_backtest.py \
+  --symbols-file symbols_us_1610.csv \
+  --daily-dir /data/UpBottom/data/1day \
+  --output-dir /data/UpBottom/outputs/backtests/waterline \
   --start 2025-10-01
 ```
 
 Outputs:
 
 ```text
+bottom_trades.csv
+bottom_summary.csv
+bottom_half_year_summary.csv
 bottom_bm_break_trades.csv
-bottom_bm_break_half_year_summary.csv
+bottom_c_confirm_trades.csv
+bottom_d_trigger_trades.csv
 waterline_ma5_trades.csv
+waterline_ma5_summary.csv
 waterline_ma5_half_year_summary.csv
-all_trades.csv
-all_half_year_summary.csv
 ```
 
 ## Useful Commands
@@ -232,5 +259,6 @@ python fetch_sp500_2026_and_mark.py --skip-fetch
 python fetch_sp500_2026_and_mark.py --skip-fetch --render-charts
 python daily_workflow.py --step fetch-scan --dry-run
 python daily_workflow.py --step cleanup
-python strategy_backtest.py --help
+python bottom_backtest.py --help
+python waterline_backtest.py --help
 ```
