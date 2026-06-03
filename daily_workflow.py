@@ -195,7 +195,6 @@ def main() -> int:
         try:
             fetch_and_scan(args)
             prepare_tmp_minutes(args)
-            run_bottom_history(args)
             if args.bottom_trade_delay_minutes > 0:
                 time.sleep(args.bottom_trade_delay_minutes * 60)
             run_bottom_trade(args)

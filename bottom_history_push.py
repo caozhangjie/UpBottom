@@ -22,9 +22,9 @@ def format_history_message(row: dict[str, str], metadata: dict[str, dict[str, st
     symbol = row.get("symbol", "")
     return "\n".join(
         [
-            f"底背离历史 BM 突破 | {stock_label(symbol, metadata)} | {row.get('timeframe', '-')}",
+            f"底背离历史信号 BM突破 | {stock_label(symbol, metadata)} | {row.get('timeframe', '-')}",
             f"BM: {row.get('BM_time') or '-'} @ {fmt_price(row.get('BM_price'))}",
-            f"BM 突破: {row.get('BM_break_time') or '-'} @ {fmt_price(row.get('BM_break_price'))}",
+            f"BM突破: {row.get('BM_break_time') or '-'} @ {fmt_price(row.get('BM_break_price'))}",
             f"状态: {row.get('structure_status') or '-'}",
             f"GA/GB: {row.get('golden_A_time') or '-'} -> {row.get('golden_B_time') or '-'}",
         ]
@@ -67,7 +67,7 @@ def main() -> int:
     args = parse_args()
     sent = load_sent_cache(args.cache)
     messages, keys = collect_messages(args.signals, set(args.timeframes), args.force, sent)
-    title = f"【UpBottom 底背离历史 BM 突破】{len(messages)} 条 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    title = f"[UpBottom 底背离历史信号 BM突破] {len(messages)} 条 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     pushed = send_or_print(title, messages, args.webhook_url or FEISHU_WEBHOOKS.get("bottom_history", ""), args.dry_run)
     if pushed and not args.dry_run:
         mark_sent(sent, keys)

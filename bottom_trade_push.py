@@ -82,7 +82,14 @@ def format_buy(row: dict[str, str], metadata: dict[str, dict[str, str]], planned
     )
 
 
-def format_sell(symbol: str, position: dict, check, date_text: str, metadata: dict[str, dict[str, str]], planned_exit_date: str) -> str:
+def format_sell(
+    symbol: str,
+    position: dict,
+    check,
+    date_text: str,
+    metadata: dict[str, dict[str, str]],
+    planned_exit_date: str,
+) -> str:
     return "\n".join(
         [
             f"底背离 BM 卖出信号 | {stock_label(symbol, metadata)}",
@@ -112,7 +119,6 @@ def process_trade_signals(
     keys: dict[str, list[str]] = {"buy": [], "sell": []}
     symbols_had_open = set(open_positions(positions))
 
-    # Existing positions are checked before new buys from today's close.
     for symbol, position in list(open_positions(positions).items()):
         daily_rows = load_daily_rows(symbol)
         maybe_fill_entry(position, daily_rows, date_text)
