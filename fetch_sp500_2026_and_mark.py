@@ -60,6 +60,7 @@ except ImportError:
 CHART_ROOT = OUTPUT_ROOT / "charts"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
+TWELVE_DATA_VWAP_URL = "https://api.twelvedata.com/vwap"
 DEFAULT_SP500_PROXY_ETF = "SPY"
 SSGA_HOLDINGS_XLSX_URL = "https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-{symbol}.xlsx"
 DATAHUB_SP500_CSV_URL = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
@@ -406,6 +407,36 @@ def parse_twelve_data_datetime(value: str) -> str:
     return text
 
 
+def fetch_twelve_data_payload(url: str, error_label: str) -> dict:
+    global _last_twelve_data_request_at
+    payload: dict | None = None
+    for attempt in range(1, TWELVE_DATA_MAX_ATTEMPTS + 1):
+        with _twelve_data_lock:
+            wait = TWELVE_DATA_MIN_REQUEST_INTERVAL - (time.monotonic() - _last_twelve_data_request_at)
+            if wait > 0:
+                time.sleep(wait)
+            _last_twelve_data_request_at = time.monotonic()
+        try:
+            payload = http_get_json(url)
+        except (TimeoutError, urllib.error.URLError, http.client.IncompleteRead, ConnectionError):
+            if attempt == TWELVE_DATA_MAX_ATTEMPTS:
+                raise
+            time.sleep(min(5 * attempt, 20))
+            continue
+        if payload.get("status") == "error" and "run out of API credits" in str(payload.get("message", "")):
+            if attempt == TWELVE_DATA_MAX_ATTEMPTS:
+                break
+            time.sleep(65)
+            continue
+        break
+
+    if payload is None:
+        raise RuntimeError(f"Twelve Data returned no payload for {error_label}")
+    if payload.get("status") == "error":
+        raise RuntimeError(payload.get("message") or payload)
+    return payload
+
+
 def fetch_twelve_data_bars(
     symbol: str,
     interval: str,
@@ -426,32 +457,7 @@ def fetch_twelve_data_bars(
         params["end_date"] = end
     url = TWELVE_DATA_TIME_SERIES_URL + "?" + urllib.parse.urlencode(params)
 
-    global _last_twelve_data_request_at
-    payload: dict | None = None
-    for attempt in range(1, TWELVE_DATA_MAX_ATTEMPTS + 1):
-        with _twelve_data_lock:
-            wait = TWELVE_DATA_MIN_REQUEST_INTERVAL - (time.monotonic() - _last_twelve_data_request_at)
-            if wait > 0:
-                time.sleep(wait)
-            _last_twelve_data_request_at = time.monotonic()
-        try:
-            payload = http_get_json(url)
-        except (TimeoutError, urllib.error.URLError, http.client.IncompleteRead, ConnectionError) as exc:
-            if attempt == TWELVE_DATA_MAX_ATTEMPTS:
-                raise
-            time.sleep(min(5 * attempt, 20))
-            continue
-        if payload.get("status") == "error" and "run out of API credits" in str(payload.get("message", "")):
-            if attempt == TWELVE_DATA_MAX_ATTEMPTS:
-                break
-            time.sleep(65)
-            continue
-        break
-
-    if payload is None:
-        raise RuntimeError(f"Twelve Data returned no payload for {symbol} {interval}")
-    if payload.get("status") == "error":
-        raise RuntimeError(payload.get("message") or payload)
+    payload = fetch_twelve_data_payload(url, f"{symbol} {interval}")
     values = payload.get("values") or []
     rows: list[Row] = []
     for item in values:
@@ -470,6 +476,44 @@ def fetch_twelve_data_bars(
         except (KeyError, TypeError, ValueError):
             continue
     return rows
+
+
+def fetch_twelve_data_vwap(
+    symbol: str,
+    interval: str,
+    start: str,
+    end: str | None,
+    api_key: str,
+) -> dict[str, float]:
+    params = {
+        "symbol": twelve_data_symbol(symbol),
+        "interval": interval,
+        "start_date": start,
+        "apikey": api_key,
+        "order": "ASC",
+        "timezone": "America/New_York",
+        "adjust": "splits",
+    }
+    if end:
+        params["end_date"] = end
+    url = TWELVE_DATA_VWAP_URL + "?" + urllib.parse.urlencode(params)
+    payload = fetch_twelve_data_payload(url, f"{symbol} {interval} vwap")
+    out: dict[str, float] = {}
+    for item in payload.get("values") or []:
+        try:
+            vwap = item.get("vwap")
+            if vwap in {None, ""}:
+                continue
+            out[parse_twelve_data_datetime(str(item.get("datetime") or ""))] = float(vwap)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def apply_vwap(rows: list[Row], vwap_by_datetime: dict[str, float]) -> list[Row]:
+    if not vwap_by_datetime:
+        return rows
+    return [Row(**{**asdict(row), "vwap": vwap_by_datetime.get(row.datetime, row.vwap)}) for row in rows]
 
 
 def resample_1h_to_4h(rows: list[Row]) -> list[Row]:
@@ -538,21 +582,27 @@ def fetch_symbol(
         daily_path = DATA_ROOT / "1day" / f"{file_symbol}_1day_indicators.csv"
         four_hour_path = DATA_ROOT / "4h" / f"{file_symbol}_4h_indicators.csv"
         counts: dict[str, int] = {}
+        notes: list[str] = []
         if provider == "twelve-data":
             if not twelve_data_api_key:
                 raise RuntimeError("Missing Twelve Data API key. Set TWELVE_DATA_API_KEY or pass --apikey.")
             if "1day" in selected_timeframes:
                 existing_daily = load_rows(daily_path, min_date=start) if daily_path.exists() else []
-                daily = merge_rows(
-                    existing_daily,
-                    fetch_twelve_data_bars(
-                        symbol,
-                        "1day",
-                        incremental_start(existing_daily, start, overlap_days),
-                        end,
-                        twelve_data_api_key,
-                    ),
+                daily_start = incremental_start(existing_daily, start, overlap_days)
+                incoming_daily = fetch_twelve_data_bars(
+                    symbol,
+                    "1day",
+                    daily_start,
+                    end,
+                    twelve_data_api_key,
                 )
+                try:
+                    vwap_by_datetime = fetch_twelve_data_vwap(symbol, "1day", daily_start, end, twelve_data_api_key)
+                    incoming_daily = apply_vwap(incoming_daily, vwap_by_datetime)
+                    notes.append(f"vwap={len(vwap_by_datetime)}")
+                except Exception as exc:
+                    notes.append(f"vwap_failed={exc}")
+                daily = merge_rows(existing_daily, incoming_daily)
                 write_rows(daily_path, daily)
                 counts["1day"] = len(daily)
             if "4h" in selected_timeframes:
@@ -580,6 +630,8 @@ def fetch_symbol(
                 write_rows(four_hour_path, four_hour)
                 counts["4h"] = len(four_hour)
         detail = " ".join(f"{timeframe}={counts[timeframe]}" for timeframe in TIMEFRAMES if timeframe in counts)
+        if notes:
+            detail = f"{detail} {' '.join(notes)}".strip()
         return symbol, True, detail or "no_timeframes_selected"
     except Exception as exc:
         return symbol, False, str(exc)

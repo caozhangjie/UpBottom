@@ -184,6 +184,8 @@ python fetch_sp500_2026_and_mark.py \
   --fetch-timeframes 1day
 ```
 
+When using the default Twelve Data provider, the daily build fetches OHLCV from `time_series` and then merges daily VWAP values from the separate `/vwap` endpoint when available.
+
 Custom universe:
 
 ```bash
