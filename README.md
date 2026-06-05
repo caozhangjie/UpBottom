@@ -127,6 +127,7 @@ planned buy = next trading day open
 ```
 
 New buys are skipped when the same symbol already has an open bottom position. BM and BM-break values are kept in the alert as context, but they are not the production entry trigger.
+The structure must not trigger `B_FAIL` from `CM_time` through the C confirmation day.
 
 ### Waterline
 

@@ -54,13 +54,23 @@ def is_valid_bm_break(row: dict[str, str]) -> bool:
 
 def is_trade_buy_candidate(row: dict[str, str], date_text: str) -> bool:
     confirm_time = c_confirm_time(row)
-    failure_time = str(row.get("failure_time") or "")
     return (
         row.get("timeframe") == "1day"
         and bool(confirm_time)
         and confirm_time[:10] == date_text
-        and (not failure_time or failure_time[:10] > date_text)
+        and not b_failed_between_cm_and_c_confirm(row)
     )
+
+
+def b_failed_between_cm_and_c_confirm(row: dict[str, str]) -> bool:
+    if row.get("failure_type") != "B_FAIL":
+        return False
+    cm_time = str(row.get("CM_time") or "")
+    confirm_time = c_confirm_time(row)
+    failure_time = str(row.get("failure_time") or "")
+    if not cm_time or not confirm_time or not failure_time:
+        return False
+    return cm_time[:10] <= failure_time[:10] <= confirm_time[:10]
 
 
 def first_c_point(row: dict[str, str]) -> dict | None:
