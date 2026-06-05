@@ -4,16 +4,16 @@ This file consolidates the useful recognition logic from the existing
 ``claude`` scripts into one small, reviewable module. It keeps the current
 v0.5 behavior:
 
-- all structure prices use close
+- most structure prices use close; C/CM use VWAP when present, otherwise close
 - golden_A/golden_B are valid golden-cross bars used for divergence comparison
 - B is the lowest close in the two-golden-cross structure window
 - MACD A/B values are DIF extrema between the prior death cross and each
   golden cross
 - BM is max close in the two-golden-cross structure window
 - BM Break is the first post-B close above BM_price
-- CM is the first future-3 confirmed high after BM Break
-- Cn/CnH are optional future-3 confirmed low/high points after CM
-- D triggers on the first close above CM_price before structure failure
+- CM is the first prior-2/future-2 confirmed high after BM Break
+- Cn/CnH are optional prior-2/future-2 confirmed low/high points after CM
+- D triggers on the first C/CM representative price above CM_price before structure failure
 
 The module intentionally does not render charts. It scans local CSV files and
 exports a compact index CSV that can be used for later charting or audit.
@@ -44,6 +44,7 @@ class Row:
     low: float
     close: float
     volume: float
+    vwap: float | None = None
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ class ADStructure:
     CM_index: int | None = None
     CM_time: str | None = None
     CM_price: float | None = None
-    CM_confirm_rule: str = "close[i] > max(close[i-4:i]) and close[i] > max(close[i+1:i+5])"
+    CM_confirm_rule: str = "price[i] >= max(price[i-2:i]) and price[i] >= max(price[i+1:i+3]); price=vwap or close"
     C_sequence: list[dict] | None = None
     D_index: int | None = None
     D_time: str | None = None
@@ -137,6 +138,7 @@ def load_rows(path: Path, min_date: str = MIN_DATE) -> list[Row]:
                     low=float(item.get("low") or ""),
                     close=float(item.get("close") or ""),
                     volume=float(item.get("volume") or 0),
+                    vwap=float(item["vwap"]) if item.get("vwap") not in {None, ""} else None,
                 )
             except ValueError:
                 continue
@@ -268,21 +270,29 @@ def detect_ab_signals(symbol: str, timeframe: str, path: Path, rows: list[Row]) 
     return signals
 
 
+def structure_price(row: Row) -> float:
+    return row.vwap if row.vwap is not None and row.vwap > 0 else row.close
+
+
+def structure_price_rule() -> str:
+    return "price=vwap if available else close"
+
+
 def future_high_confirmed(rows: list[Row], i: int) -> bool:
-    return (
-        i - 4 >= 0
-        and i + 4 < len(rows)
-        and rows[i].close > max(r.close for r in rows[i - 4 : i])
-        and rows[i].close > max(r.close for r in rows[i + 1 : i + 5])
+    if i - 2 < 0 or i + 2 >= len(rows):
+        return False
+    price = structure_price(rows[i])
+    return price >= max(structure_price(r) for r in rows[i - 2 : i]) and price >= max(
+        structure_price(r) for r in rows[i + 1 : i + 3]
     )
 
 
 def future_low_confirmed(rows: list[Row], i: int) -> bool:
-    return (
-        i - 4 >= 0
-        and i + 4 < len(rows)
-        and rows[i].close < min(r.close for r in rows[i - 4 : i])
-        and rows[i].close < min(r.close for r in rows[i + 1 : i + 5])
+    if i - 2 < 0 or i + 2 >= len(rows):
+        return False
+    price = structure_price(rows[i])
+    return price <= min(structure_price(r) for r in rows[i - 2 : i]) and price <= min(
+        structure_price(r) for r in rows[i + 1 : i + 3]
     )
 
 
@@ -361,28 +371,33 @@ def evaluate_ad_structure(rows: list[Row], sig: ABSignal) -> ADStructure:
         return st
     st.CM_index = cm_index
     st.CM_time = rows[cm_index].datetime
-    st.CM_price = rows[cm_index].close
+    st.CM_price = structure_price(rows[cm_index])
 
     current_c: dict | None = None
     for i in range(cm_index + 1, len(rows)):
         failure = check_failure(i, current_c)
         if failure is not None:
             return failure
-        if rows[i].close > st.CM_price:
+        current_price = structure_price(rows[i])
+        if current_price > st.CM_price:
             st.D_index = i
             st.D_time = rows[i].datetime
-            st.D_price = rows[i].close
+            st.D_price = current_price
             st.structure_status = "D_TRIGGERED"
             st.signal_type = "D_ALERT"
             return st
 
         if current_c is None and future_low_confirmed(rows, i):
+            c_price = structure_price(rows[i])
             current_c = {
                 "label": "C",
                 "index": i,
                 "time": rows[i].datetime,
-                "price": rows[i].close,
-                "confirm_rule": "close[i] < min(close[i-4:i]) and close[i] < min(close[i+1:i+5])",
+                "price": c_price,
+                "confirm_index": i + 2,
+                "confirm_time": rows[i + 2].datetime,
+                "price_rule": structure_price_rule(),
+                "confirm_rule": "price[i] <= min(price[i-2:i]) and price[i] <= min(price[i+1:i+3]); price=vwap or close",
                 "rebound_high_label": None,
                 "rebound_high_index": None,
                 "rebound_high_time": None,

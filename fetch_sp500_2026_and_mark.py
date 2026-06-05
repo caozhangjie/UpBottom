@@ -499,7 +499,7 @@ def resample_1h_to_4h(rows: list[Row]) -> list[Row]:
 def write_rows(path: Path, rows: list[Row]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["datetime", "open", "high", "low", "close", "volume"])
+        writer = csv.DictWriter(f, fieldnames=["datetime", "open", "high", "low", "close", "volume", "vwap"])
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
