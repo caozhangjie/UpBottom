@@ -464,6 +464,7 @@ def fetch_twelve_data_bars(
                     low=float(item["low"]),
                     close=float(item["close"]),
                     volume=float(item.get("volume") or 0),
+                    vwap=float(item["vwap"]) if item.get("vwap") not in {None, ""} else None,
                 )
             )
         except (KeyError, TypeError, ValueError):
