@@ -18,7 +18,7 @@ Active scheduled jobs:
 
 - Daily data update and bottom-divergence scan: `daily_workflow.py --step fetch-scan`
 - Shared temporary 1min download: `daily_workflow.py --step prepare-tmp`
-- Bottom-divergence BM buy/sell push: `daily_workflow.py --step bottom-trade`
+- Bottom-divergence C-confirm buy/sell push: `daily_workflow.py --step bottom-trade`
 - Waterline signal-day/trade-day push: `daily_workflow.py --step waterline`
 - Temporary 1min cleanup: `daily_workflow.py --step cleanup`
 - Off-hours split-adjustment repair: `fetch_sp500_2026_and_mark.py --repair-split-jumps`
@@ -69,7 +69,7 @@ Core:
 Production pushes:
 
 - `daily_workflow.py`: step-based cron workflow.
-- `bottom_trade_push.py`: bottom-divergence BM buy/sell alerts and position state.
+- `bottom_trade_push.py`: bottom-divergence C-confirm buy/sell alerts and position state.
 - `waterline_push.py`: waterline signal-day and trade-day alerts.
 - `bottom_history_push.py`: manual historical bottom-divergence BM-break alerts.
 - `bottom_common.py`, `push_utils.py`, `intraday_tmp.py`: shared production helpers.
@@ -118,15 +118,15 @@ Structure points:
 - `B_FAIL`: after `B`, close falls below `B_price * 0.95`.
 - `C_FAIL`: after `C`, close falls below `C_price * 0.95`.
 
-Production bottom trading uses BM break:
+Production bottom trading uses the first C confirmation from the double-golden-cross bottom divergence:
 
 ```text
-buy signal day = BM_break_time date
-reference_price = BM_break_price
+buy signal day = first C confirm_time date
+reference_price = C confirmation daily close
 planned buy = next trading day open
 ```
 
-New buys are skipped when the same symbol already has an open bottom position.
+New buys are skipped when the same symbol already has an open bottom position. BM and BM-break values are kept in the alert as context, but they are not the production entry trigger.
 
 ### Waterline
 
@@ -245,7 +245,7 @@ Robust split workflow:
 # 2. Download shared temporary 1min data once.
 55 5 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step prepare-tmp >> /data/UpBottom/logs/upbottom_prepare_tmp.log 2>&1
 
-# 3. Push bottom-divergence BM buy/sell signals.
+# 3. Push bottom-divergence C-confirm buy/sell signals.
 30 6 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step bottom-trade >> /data/UpBottom/logs/upbottom_bottom_trade.log 2>&1
 
 # 4. Push waterline signal-day and trade-day signals.
@@ -286,7 +286,7 @@ Push state lives under:
 Important files:
 
 ```text
-bottom_trade_positions.json       # open/closed bottom BM trade state
+bottom_trade_positions.json       # open/closed bottom C-confirm trade state
 bottom_trade_daily_cache.json     # daily bottom buy/sell dedupe
 waterline_push_cache.json         # waterline signal/trade dedupe
 bottom_history_push_cache.json    # manual historical BM-break dedupe

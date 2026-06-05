@@ -6,7 +6,10 @@ from pathlib import Path
 
 from bottom_common import (
     can_check_exit,
+    c_confirm_row,
+    c_confirm_time,
     check_exit_signal,
+    first_c_point,
     has_open_position,
     is_trade_buy_candidate,
     load_ad_signals,
@@ -34,7 +37,7 @@ from push_utils import (
 
 
 def buy_key(date_text: str, symbol: str) -> str:
-    return f"bottom_trade_buy|{date_text}|{symbol}"
+    return f"bottom_c_confirm_buy|{date_text}|{symbol}"
 
 
 def sell_key(date_text: str, symbol: str) -> str:
@@ -70,13 +73,15 @@ def maybe_fill_entry(position: dict, daily_rows, date_text: str) -> None:
 
 def format_buy(row: dict[str, str], metadata: dict[str, dict[str, str]], planned_entry_date: str) -> str:
     symbol = row.get("symbol", "")
+    c_point = first_c_point(row) or {}
     return "\n".join(
         [
-            f"底背离 BM 买入信号 | {stock_label(symbol, metadata)}",
-            f"信号日: {row.get('BM_break_time') or '-'}",
+            f"底背离 C 确认买入信号 | {stock_label(symbol, metadata)}",
+            f"信号日: {c_confirm_time(row) or '-'}",
+            f"C 点: {c_point.get('time') or '-'} @ {fmt_price(c_point.get('price'))}",
+            f"C 确认收盘价/reference: {fmt_price(row.get('_c_confirm_close'))}",
             f"BM: {row.get('BM_time') or '-'} @ {fmt_price(row.get('BM_price'))}",
-            f"突破收盘价: {fmt_price(row.get('BM_break_price'))}",
-            f"reference_price: {fmt_price(row.get('BM_break_price'))}",
+            f"BM 突破: {row.get('BM_break_time') or '-'} @ {fmt_price(row.get('BM_break_price'))}",
             f"计划执行: {planned_entry_date or '下一交易日'} 开盘买入",
         ]
     )
@@ -92,7 +97,7 @@ def format_sell(
 ) -> str:
     return "\n".join(
         [
-            f"底背离 BM 卖出信号 | {stock_label(symbol, metadata)}",
+            f"底背离 C 确认卖出信号 | {stock_label(symbol, metadata)}",
             f"触发日: {date_text}",
             f"触发规则: {check.rule}，跌破比例 {fmt_ratio(check.below_ratio)}",
             f"MA{position.get('ma_window', 5)}: {fmt_price(check.ma_price) if check.ma_price is not None else '-'}，MA跌破比例 {fmt_ratio(check.ma_below_ratio)}",
@@ -160,7 +165,7 @@ def process_trade_signals(
         keys["sell"].append(key)
 
     buy_rows = [row for row in load_ad_signals(signals_path) if is_trade_buy_candidate(row, date_text)]
-    buy_rows.sort(key=lambda row: (row.get("BM_break_time", ""), row.get("symbol", "")))
+    buy_rows.sort(key=lambda row: (c_confirm_time(row), row.get("symbol", "")))
     for row in buy_rows:
         symbol = row.get("symbol", "")
         if not symbol or symbol in symbols_had_open or has_open_position(positions, symbol):
@@ -169,15 +174,24 @@ def process_trade_signals(
         if not force and key in sent:
             continue
         daily_rows = load_daily_rows(symbol)
+        confirm_row = c_confirm_row(row, daily_rows)
+        if confirm_row is None:
+            continue
         next_row = next_daily_row_after(daily_rows, date_text)
         planned_entry_date = next_row.datetime[:10] if next_row else ""
+        reference_price = confirm_row.close
+        row["_c_confirm_close"] = str(reference_price)
+        c_point = first_c_point(row) or {}
         positions[symbol] = {
             "status": "OPEN",
-            "strategy": "bottom_bm_break",
+            "strategy": "bottom_c_confirm",
             "symbol": symbol,
             "signal_date": date_text,
-            "signal_time": row.get("BM_break_time", ""),
-            "reference_price": float(row.get("BM_break_price") or 0),
+            "signal_time": c_confirm_time(row),
+            "reference_price": reference_price,
+            "c_time": str(c_point.get("time") or ""),
+            "c_price": float(c_point.get("price") or 0),
+            "c_confirm_price": reference_price,
             "bm_price": float(row.get("BM_price") or 0),
             "bm_break_price": float(row.get("BM_break_price") or 0),
             "planned_entry_date": planned_entry_date,
@@ -194,7 +208,7 @@ def process_trade_signals(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Push daily bottom-divergence BM buy/sell signals to Feishu.")
+    parser = argparse.ArgumentParser(description="Push daily bottom-divergence C-confirm buy/sell signals to Feishu.")
     parser.add_argument("--date", default=today_text())
     parser.add_argument("--signals", type=Path, default=OUTPUT_ROOT / "ad_signals.csv")
     parser.add_argument("--cache", type=Path, default=state_path("bottom_trade_daily_cache.json"))
@@ -220,8 +234,8 @@ def main() -> int:
         args.ma_window,
         args.min_minutes,
     )
-    buy_title = f"[UpBottom bottom BM buy signals] {args.date} | {len(messages_by_type['buy'])} messages"
-    sell_title = f"[UpBottom bottom BM sell signals] {args.date} | {len(messages_by_type['sell'])} messages"
+    buy_title = f"[UpBottom bottom C-confirm buy signals] {args.date} | {len(messages_by_type['buy'])} messages"
+    sell_title = f"[UpBottom bottom C-confirm sell signals] {args.date} | {len(messages_by_type['sell'])} messages"
     buy_pushed = send_or_print(
         buy_title,
         messages_by_type["buy"],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 from ad_structure_v05_core import Row, load_rows
@@ -52,12 +53,42 @@ def is_valid_bm_break(row: dict[str, str]) -> bool:
 
 
 def is_trade_buy_candidate(row: dict[str, str], date_text: str) -> bool:
+    confirm_time = c_confirm_time(row)
+    failure_time = str(row.get("failure_time") or "")
     return (
         row.get("timeframe") == "1day"
-        and is_valid_bm_break(row)
-        and row.get("BM_break_time", "")[:10] == date_text
-        and bool(row.get("BM_break_price"))
+        and bool(confirm_time)
+        and confirm_time[:10] == date_text
+        and (not failure_time or failure_time[:10] > date_text)
     )
+
+
+def first_c_point(row: dict[str, str]) -> dict | None:
+    try:
+        items = json.loads(row.get("C_sequence") or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(items, list) or not items:
+        return None
+    item = items[0]
+    return item if isinstance(item, dict) else None
+
+
+def c_confirm_time(row: dict[str, str]) -> str:
+    c_point = first_c_point(row)
+    if not c_point:
+        return ""
+    return str(c_point.get("confirm_time") or "")
+
+
+def c_confirm_row(row: dict[str, str], daily_rows: list[Row]) -> Row | None:
+    confirm_date = c_confirm_time(row)[:10]
+    if not confirm_date:
+        return None
+    for daily_row in daily_rows:
+        if daily_row.datetime[:10] == confirm_date:
+            return daily_row
+    return None
 
 
 def daily_path(symbol: str) -> Path:
