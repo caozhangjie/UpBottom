@@ -5,14 +5,19 @@ import os
 import subprocess
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from constants import DATA_ROOT, FEISHU_WEBHOOKS
 from intraday_tmp import cleanup_tmp_minutes, ensure_tmp_minutes
-from push_utils import today_text
+from push_utils import parse_date, today_text
 
 import bottom_trade_push
 import waterline_push
+
+
+def default_market_date() -> str:
+    return (parse_date(today_text()) - timedelta(days=1)).isoformat()
 
 
 def run_command(args: list[str]) -> None:
@@ -162,7 +167,7 @@ def run_waterline(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the daily UpBottom fetch, scan, push, and tmp cleanup workflow.")
-    parser.add_argument("--date", default=today_text())
+    parser.add_argument("--date", default=default_market_date())
     parser.add_argument(
         "--step",
         choices=["all", "fetch-scan", "prepare-tmp", "bottom-history", "bottom-trade", "waterline", "cleanup"],

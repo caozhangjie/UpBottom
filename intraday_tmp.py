@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import urllib.error
 
 from ad_structure_v05_core import Row, load_rows
 from constants import TMP_MINUTE_ROOT
@@ -39,7 +40,16 @@ def ensure_tmp_minutes(
             counts[symbol] = len(existing)
             continue
         source_symbol = source_symbol_for(symbol, metadata)
-        rows = fetch_twelve_data_bars(source_symbol, "1min", date_text, exclusive_end(date_text), api_key)
+        try:
+            rows = fetch_twelve_data_bars(source_symbol, "1min", date_text, exclusive_end(date_text), api_key)
+        except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError, TimeoutError) as exc:
+            print(
+                f"tmp_1min_fetch_failed symbol={symbol} source_symbol={source_symbol} "
+                f"date={date_text} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            counts[symbol] = 0
+            continue
         day_rows = [row for row in rows if row.datetime[:10] == date_text]
         write_rows(tmp_minute_path(symbol), day_rows)
         counts[symbol] = len(day_rows)
