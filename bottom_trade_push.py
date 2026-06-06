@@ -26,23 +26,11 @@ from push_utils import (
     fmt_price,
     fmt_ratio,
     load_metadata,
-    load_sent_cache,
-    mark_sent,
     parse_date,
     prior_date_text,
-    save_sent_cache,
     send_or_print,
-    state_path,
     stock_label,
 )
-
-
-def buy_key(date_text: str, symbol: str) -> str:
-    return f"bottom_c_confirm_buy|{date_text}|{symbol}"
-
-
-def sell_key(date_text: str, symbol: str) -> str:
-    return f"bottom_trade_sell|{date_text}|{symbol}"
 
 
 def collect_required_tmp_symbols(date_text: str) -> list[str]:
@@ -113,17 +101,14 @@ def format_sell(
 def process_trade_signals(
     date_text: str,
     signals_path: Path,
-    sent: dict[str, dict],
-    force: bool,
     exit_below_ratio: float,
     ma_window: int,
     min_minutes: int,
-) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, dict], collections.Counter]:
+) -> tuple[dict[str, list[str]], dict[str, dict], collections.Counter]:
     metadata = load_metadata()
     positions = load_positions()
     stats: collections.Counter = collections.Counter()
     messages: dict[str, list[str]] = {"buy": [], "sell": []}
-    keys: dict[str, list[str]] = {"buy": [], "sell": []}
     open_items = open_positions(positions)
     symbols_had_open = set(open_items)
     stats["open_positions"] = len(open_items)
@@ -135,10 +120,6 @@ def process_trade_signals(
         if not can_check_exit(position, date_text):
             stats["sell_not_ready"] += 1
             positions[symbol] = position
-            continue
-        key = sell_key(date_text, symbol)
-        if not force and key in sent:
-            stats["sell_skipped_cache"] += 1
             continue
         minute_rows = load_tmp_minutes(symbol, date_text)
         check = check_exit_signal(
@@ -173,7 +154,6 @@ def process_trade_signals(
         )
         positions[symbol] = position
         messages["sell"].append(format_sell(symbol, position, check, date_text, metadata, planned_exit_date))
-        keys["sell"].append(key)
         stats["sell_messages"] += 1
 
     buy_rows = [row for row in load_ad_signals(signals_path) if is_trade_buy_candidate(row, date_text)]
@@ -186,10 +166,6 @@ def process_trade_signals(
             continue
         if symbol in symbols_had_open or has_open_position(positions, symbol):
             stats["buy_skipped_open_position"] += 1
-            continue
-        key = buy_key(date_text, symbol)
-        if not force and key in sent:
-            stats["buy_skipped_cache"] += 1
             continue
         daily_rows = load_daily_rows(symbol)
         confirm_row = c_confirm_row(row, daily_rows)
@@ -221,22 +197,20 @@ def process_trade_signals(
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
         messages["buy"].append(format_buy(row, metadata, planned_entry_date))
-        keys["buy"].append(key)
         stats["buy_messages"] += 1
 
-    return messages, keys, positions, stats
+    return messages, positions, stats
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Push daily bottom-divergence C-confirm buy/sell signals to Feishu.")
     parser.add_argument("--date", default=prior_date_text())
     parser.add_argument("--signals", type=Path, default=OUTPUT_ROOT / "ad_signals.csv")
-    parser.add_argument("--cache", type=Path, default=state_path("bottom_trade_daily_cache.json"))
     parser.add_argument("--exit-below-ratio", type=float, default=0.5)
     parser.add_argument("--ma-window", type=int, default=5)
     parser.add_argument("--min-minutes", type=int, default=300)
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--buy-webhook-url", default=None)
     parser.add_argument("--sell-webhook-url", default=None)
     return parser.parse_args()
@@ -244,12 +218,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    sent = load_sent_cache(args.cache)
-    messages_by_type, keys_by_type, positions, stats = process_trade_signals(
+    messages_by_type, positions, stats = process_trade_signals(
         args.date,
         args.signals,
-        sent,
-        args.force,
         args.exit_below_ratio,
         args.ma_window,
         args.min_minutes,
@@ -269,16 +240,10 @@ def main() -> int:
         args.dry_run,
     )
     if not args.dry_run:
-        if buy_pushed:
-            mark_sent(sent, keys_by_type["buy"])
-        if sell_pushed:
-            mark_sent(sent, keys_by_type["sell"])
-        if buy_pushed or sell_pushed:
-            save_sent_cache(args.cache, sent)
         save_positions(positions)
     print(
         f"bottom_buy_messages={len(messages_by_type['buy'])} pushed={buy_pushed} "
-        f"bottom_sell_messages={len(messages_by_type['sell'])} pushed={sell_pushed} cache={args.cache}",
+        f"bottom_sell_messages={len(messages_by_type['sell'])} pushed={sell_pushed}",
         flush=True,
     )
     print("bottom_diagnostics=" + " ".join(f"{key}={stats[key]}" for key in sorted(stats)), flush=True)

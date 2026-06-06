@@ -44,7 +44,7 @@ Production layout:
 ```text
 /data/UpBottom/data/1day/              # long-term daily cache
 /data/UpBottom/outputs/ad_signals.csv  # latest bottom-divergence scan
-/data/UpBottom/outputs/push_state/     # push dedupe and open-position state
+/data/UpBottom/outputs/push_state/     # historical push dedupe and open-position state
 /data/UpBottom/tmp/1min/               # temporary production minute data
 /data/UpBottom/logs/                   # cron logs
 ```
@@ -307,11 +307,11 @@ Important files:
 
 ```text
 bottom_trade_positions.json       # open/closed bottom C-confirm trade state
-bottom_trade_daily_cache.json     # daily bottom buy/sell dedupe
 waterline_positions.json          # open/closed waterline trend trade state
-waterline_push_cache.json         # waterline signal/trade dedupe
 bottom_history_push_cache.json    # manual historical BM-break dedupe
 ```
+
+Bottom trade and waterline daily pushes do not use push-cache dedupe. They only use open/closed position state, so a failed same-day run can be rerun without deleting cache files. Historical bottom BM-break pushes still use `bottom_history_push_cache.json` for daily dedupe.
 
 ## Useful Commands
 

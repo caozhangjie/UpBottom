@@ -13,12 +13,9 @@ from push_utils import (
     fmt_ratio,
     load_json,
     load_metadata,
-    load_sent_cache,
-    mark_sent,
     parse_date,
     prior_date_text,
     save_json,
-    save_sent_cache,
     send_or_print,
     state_path,
     stock_label,
@@ -32,18 +29,6 @@ from waterline_signal import (
 
 
 POSITIONS_PATH = state_path("waterline_positions.json")
-
-
-def signal_key(symbol: str, signal_date: str, trade_date: str) -> str:
-    return f"waterline_signal|{symbol}|{signal_date}|{trade_date}"
-
-
-def trade_key(symbol: str, signal_date: str, trade_date: str) -> str:
-    return f"waterline_trade|{symbol}|{signal_date}|{trade_date}"
-
-
-def sell_key(symbol: str, date_text: str) -> str:
-    return f"waterline_sell|{symbol}|{date_text}"
 
 
 def load_positions() -> dict[str, dict]:
@@ -202,13 +187,11 @@ def maybe_fill_entry(position: dict, daily_rows, date_text: str) -> None:
 
 def collect_sell_messages(
     args: argparse.Namespace,
-    sent: dict[str, dict],
     positions: dict[str, dict],
     metadata: dict[str, dict[str, str]],
     stats: collections.Counter,
-) -> tuple[list[str], list[str]]:
+) -> list[str]:
     messages: list[str] = []
-    keys: list[str] = []
     open_items = open_positions(positions)
     stats["sell_open_positions"] = len(open_items)
     for symbol, position in list(open_items.items()):
@@ -223,10 +206,6 @@ def collect_sell_messages(
         if not entry_date or parse_date(args.date) < parse_date(entry_date):
             stats["sell_not_ready"] += 1
             positions[symbol] = position
-            continue
-        key = sell_key(symbol, args.date)
-        if not args.force and key in sent:
-            stats["sell_skipped_cache"] += 1
             continue
         ma_price = prior_ma_by_date(daily_rows, args.sell_ma_window).get(args.date)
         if ma_price is None:
@@ -258,21 +237,16 @@ def collect_sell_messages(
         )
         positions[symbol] = position
         messages.append(format_sell(symbol, position, args.date, ma_price, below, total, ratio, planned_exit_date, metadata))
-        keys.append(key)
         stats["sell_messages"] += 1
-    return messages, keys
+    return messages
 
 
-def collect_messages(
-    args: argparse.Namespace,
-    sent: dict[str, dict],
-) -> tuple[dict[str, list[str]], dict[str, list[str]], collections.Counter]:
+def collect_messages(args: argparse.Namespace) -> tuple[dict[str, list[str]], collections.Counter]:
     metadata = load_metadata()
     positions = load_positions()
     stats: collections.Counter = collections.Counter()
     messages: dict[str, list[str]] = {"signal": [], "trade": [], "sell": []}
-    keys: dict[str, list[str]] = {"signal": [], "trade": [], "sell": []}
-    messages["sell"], keys["sell"] = collect_sell_messages(args, sent, positions, metadata, stats)
+    messages["sell"] = collect_sell_messages(args, positions, metadata, stats)
 
     symbols = symbols_from_args(args)
     stats["symbols"] = len(symbols)
@@ -286,13 +260,8 @@ def collect_messages(
             stats["candidates_total"] += 1
             if candidate.signal_date == args.date and args.include_signal_day:
                 stats["signal_candidates_today"] += 1
-                key = signal_key(symbol, candidate.signal_date, candidate.trade_date)
-                if args.force or key not in sent:
-                    messages["signal"].append(format_signal(candidate, metadata))
-                    keys["signal"].append(key)
-                    stats["signal_messages"] += 1
-                else:
-                    stats["signal_skipped_cache"] += 1
+                messages["signal"].append(format_signal(candidate, metadata))
+                stats["signal_messages"] += 1
             if candidate.trade_date != args.date:
                 continue
             stats["trade_candidates_today"] += 1
@@ -301,37 +270,32 @@ def collect_messages(
             if not entry:
                 stats["trade_not_confirmed"] += 1
                 continue
-            key = trade_key(symbol, entry.signal_date, entry.trade_date)
-            if args.force or key not in sent:
-                messages["trade"].append(format_trade(entry, metadata))
-                keys["trade"].append(key)
-                stats["trade_messages"] += 1
-                if not has_open_position(positions, symbol):
-                    positions[symbol] = {
-                        "status": "OPEN",
-                        "strategy": "waterline_trend",
-                        "symbol": symbol,
-                        "signal_date": entry.signal_date,
-                        "signal_time": entry.signal_time,
-                        "trade_date": entry.trade_date,
-                        "reference_price": entry.signal_close,
-                        "planned_entry_date": entry.trade_date,
-                        "trend_lookback": entry.trend_lookback,
-                        "trend_up_days": entry.trend_up_days,
-                        "trend_return": entry.trend_return,
-                        "signal_return": entry.signal_return,
-                        "signal_return_lookback": entry.signal_return_lookback,
-                        "entry_confirm_price": entry.entry_price,
-                        "sell_ma_window": args.sell_ma_window,
-                        "created_at": datetime.now().isoformat(timespec="seconds"),
-                    }
-                else:
-                    stats["trade_open_position_exists"] += 1
+            messages["trade"].append(format_trade(entry, metadata))
+            stats["trade_messages"] += 1
+            if not has_open_position(positions, symbol):
+                positions[symbol] = {
+                    "status": "OPEN",
+                    "strategy": "waterline_trend",
+                    "symbol": symbol,
+                    "signal_date": entry.signal_date,
+                    "signal_time": entry.signal_time,
+                    "trade_date": entry.trade_date,
+                    "reference_price": entry.signal_close,
+                    "planned_entry_date": entry.trade_date,
+                    "trend_lookback": entry.trend_lookback,
+                    "trend_up_days": entry.trend_up_days,
+                    "trend_return": entry.trend_return,
+                    "signal_return": entry.signal_return,
+                    "signal_return_lookback": entry.signal_return_lookback,
+                    "entry_confirm_price": entry.entry_price,
+                    "sell_ma_window": args.sell_ma_window,
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                }
             else:
-                stats["trade_skipped_cache"] += 1
+                stats["trade_open_position_exists"] += 1
     if not args.dry_run:
         save_positions(positions)
-    return messages, keys, stats
+    return messages, stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -355,9 +319,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sell-ma-window", type=int, default=20)
     parser.add_argument("--sell-below-ratio", type=float, default=0.5)
     parser.add_argument("--include-signal-day", action="store_true", default=True)
-    parser.add_argument("--cache", type=Path, default=state_path("waterline_push_cache.json"))
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--signal-webhook-url", default=None)
     parser.add_argument("--trade-webhook-url", default=None)
     return parser.parse_args()
@@ -365,8 +328,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    sent = load_sent_cache(args.cache)
-    messages_by_type, keys_by_type, stats = collect_messages(args, sent)
+    messages_by_type, stats = collect_messages(args)
     signal_title = f"[UpBottom waterline trend signal day] {args.date} | {len(messages_by_type['signal'])} messages"
     trade_title = f"[UpBottom waterline trend trade day] {args.date} | {len(messages_by_type['trade'])} messages"
     sell_title = f"[UpBottom waterline MA20 sell] {args.date} | {len(messages_by_type['sell'])} messages"
@@ -388,18 +350,10 @@ def main() -> int:
         args.trade_webhook_url or FEISHU_WEBHOOKS.get("waterline_trade", ""),
         args.dry_run,
     )
-    if not args.dry_run:
-        if signal_pushed:
-            mark_sent(sent, keys_by_type["signal"])
-        if trade_pushed:
-            mark_sent(sent, keys_by_type["trade"])
-        if sell_pushed:
-            mark_sent(sent, keys_by_type["sell"])
-        save_sent_cache(args.cache, sent)
     print(
         f"waterline_signal_messages={len(messages_by_type['signal'])} pushed={signal_pushed} "
         f"waterline_trade_messages={len(messages_by_type['trade'])} pushed={trade_pushed} "
-        f"waterline_sell_messages={len(messages_by_type['sell'])} pushed={sell_pushed} cache={args.cache}",
+        f"waterline_sell_messages={len(messages_by_type['sell'])} pushed={sell_pushed}",
         flush=True,
     )
     print("waterline_diagnostics=" + " ".join(f"{key}={stats[key]}" for key in sorted(stats)), flush=True)
