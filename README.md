@@ -137,6 +137,7 @@ Waterline is a trend-continuation setup. The signal day looks for a small rising
 trend_lookback = 5
 trend_up_days >= 4
 signal close / first close in trend window - 1 >= 0.03
+signal-day close/previous close - 1 > each of the previous 4 daily returns
 close > open
 close >= MA20
 MA20 is above its value 3 trading days ago

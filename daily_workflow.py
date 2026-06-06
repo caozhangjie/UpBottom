@@ -63,6 +63,7 @@ def prepare_tmp_minutes(args: argparse.Namespace) -> None:
         trend_lookback=args.trend_lookback,
         trend_min_up_days=args.trend_min_up_days,
         trend_min_return=args.trend_min_return,
+        signal_return_lookback=args.signal_return_lookback,
         waterline_ma_window=args.waterline_ma_window,
         ma_slope_lookback=args.ma_slope_lookback,
     )
@@ -143,6 +144,8 @@ def run_waterline(args: argparse.Namespace) -> None:
         str(args.trend_min_up_days),
         "--trend-min-return",
         str(args.trend_min_return),
+        "--signal-return-lookback",
+        str(args.signal_return_lookback),
         "--waterline-ma-window",
         str(args.waterline_ma_window),
         "--ma-slope-lookback",
@@ -191,6 +194,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trend-lookback", type=int, default=5)
     parser.add_argument("--trend-min-up-days", type=int, default=4)
     parser.add_argument("--trend-min-return", type=float, default=0.03)
+    parser.add_argument("--signal-return-lookback", type=int, default=4)
     parser.add_argument("--waterline-ma-window", type=int, default=20)
     parser.add_argument("--ma-slope-lookback", type=int, default=3)
     parser.add_argument("--waterline-sell-ma-window", type=int, default=20)

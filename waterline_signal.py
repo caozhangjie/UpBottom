@@ -34,6 +34,8 @@ class WaterlineEntry:
     trend_lookback: int
     trend_up_days: int
     trend_return: float
+    signal_return: float
+    signal_return_lookback: int
     ma_window: int
     ma_price: float
     ma_slope_lookback: int
@@ -63,6 +65,8 @@ class WaterlineCandidate:
     trend_lookback: int
     trend_up_days: int
     trend_return: float
+    signal_return: float
+    signal_return_lookback: int
     ma_window: int
     ma_price: float
     ma_slope_lookback: int
@@ -118,6 +122,7 @@ class WaterlineSignalMetrics:
     volume_ratio: float
     trend_up_days: int
     trend_return: float
+    signal_return: float
     ma_price: float
     ma_slope: float
 
@@ -135,11 +140,12 @@ def is_signal_day(
     trend_lookback: int,
     trend_min_up_days: int,
     trend_min_return: float,
+    signal_return_lookback: int,
     ma_window: int,
     ma_slope_lookback: int,
 ) -> tuple[bool, WaterlineSignalMetrics]:
-    empty = WaterlineSignalMetrics(0.0, 0.0, 0, 0.0, 0.0, 0.0)
-    min_prior = max(volume_lookback, trend_lookback - 1, ma_window + ma_slope_lookback - 1)
+    empty = WaterlineSignalMetrics(0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0)
+    min_prior = max(volume_lookback, trend_lookback - 1, signal_return_lookback + 1, ma_window + ma_slope_lookback - 1)
     if len(prior_rows) < min_prior:
         return False, empty
     prior_volume_rows = prior_rows[-volume_lookback:]
@@ -148,6 +154,14 @@ def is_signal_day(
     trend_rows = prior_rows[-(trend_lookback - 1) :] + [row]
     trend_up_days = sum(1 for prev, curr in zip(trend_rows, trend_rows[1:]) if curr.close > prev.close)
     trend_return = row.close / trend_rows[0].close - 1 if trend_rows[0].close > 0 else 0.0
+    recent_rows = prior_rows[-(signal_return_lookback + 1) :] + [row]
+    daily_returns = [
+        curr.close / prev.close - 1
+        for prev, curr in zip(recent_rows, recent_rows[1:])
+        if prev.close > 0
+    ]
+    signal_return = daily_returns[-1] if daily_returns else 0.0
+    prior_returns = daily_returns[:-1]
     ma_rows = prior_rows[-(ma_window + ma_slope_lookback - 1) :] + [row]
     ma_price = average([item.close for item in ma_rows[-ma_window:]])
     prior_ma = average([item.close for item in ma_rows[-(ma_window + ma_slope_lookback) : -ma_slope_lookback]])
@@ -156,9 +170,10 @@ def is_signal_day(
     bullish_shape = row.close > row.open and (candle_k <= 0 or row.close - row.low > candle_k * upper_shadow)
     enough_volume = prior_volume_avg > 0 and volume_ratio >= volume_multiple
     trend_ok = trend_up_days >= trend_min_up_days and trend_return >= trend_min_return
+    signal_return_ok = bool(prior_returns) and signal_return > max(prior_returns)
     ma_ok = ma_price > 0 and row.close >= ma_price and ma_slope > 0
-    metrics = WaterlineSignalMetrics(prior_volume_avg, volume_ratio, trend_up_days, trend_return, ma_price, ma_slope)
-    return bullish_shape and enough_volume and trend_ok and ma_ok, metrics
+    metrics = WaterlineSignalMetrics(prior_volume_avg, volume_ratio, trend_up_days, trend_return, signal_return, ma_price, ma_slope)
+    return bullish_shape and enough_volume and trend_ok and signal_return_ok and ma_ok, metrics
 
 
 def minute_above_ratio(rows: list[Row], waterline: float) -> tuple[int, int, float]:
@@ -178,6 +193,7 @@ def scan_symbol_entries(
     trend_lookback: int,
     trend_min_up_days: int,
     trend_min_return: float,
+    signal_return_lookback: int,
     ma_window: int,
     ma_slope_lookback: int,
     above_ratio_threshold: float,
@@ -199,6 +215,7 @@ def scan_symbol_entries(
             trend_lookback,
             trend_min_up_days,
             trend_min_return,
+            signal_return_lookback,
             ma_window,
             ma_slope_lookback,
         )
@@ -225,6 +242,8 @@ def scan_symbol_entries(
                 trend_lookback=trend_lookback,
                 trend_up_days=metrics.trend_up_days,
                 trend_return=metrics.trend_return,
+                signal_return=metrics.signal_return,
+                signal_return_lookback=signal_return_lookback,
                 ma_window=ma_window,
                 ma_price=metrics.ma_price,
                 ma_slope_lookback=ma_slope_lookback,
@@ -250,6 +269,7 @@ def scan_symbol_candidates(
     trend_lookback: int,
     trend_min_up_days: int,
     trend_min_return: float,
+    signal_return_lookback: int,
     ma_window: int,
     ma_slope_lookback: int,
 ) -> list[WaterlineCandidate]:
@@ -267,6 +287,7 @@ def scan_symbol_candidates(
             trend_lookback,
             trend_min_up_days,
             trend_min_return,
+            signal_return_lookback,
             ma_window,
             ma_slope_lookback,
         )
@@ -288,6 +309,8 @@ def scan_symbol_candidates(
                 trend_lookback=trend_lookback,
                 trend_up_days=metrics.trend_up_days,
                 trend_return=metrics.trend_return,
+                signal_return=metrics.signal_return,
+                signal_return_lookback=signal_return_lookback,
                 ma_window=ma_window,
                 ma_price=metrics.ma_price,
                 ma_slope_lookback=ma_slope_lookback,
@@ -325,6 +348,8 @@ def confirm_candidate_entry(
         trend_lookback=candidate.trend_lookback,
         trend_up_days=candidate.trend_up_days,
         trend_return=candidate.trend_return,
+        signal_return=candidate.signal_return,
+        signal_return_lookback=candidate.signal_return_lookback,
         ma_window=candidate.ma_window,
         ma_price=candidate.ma_price,
         ma_slope_lookback=candidate.ma_slope_lookback,
@@ -384,6 +409,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trend-lookback", type=int, default=5)
     parser.add_argument("--trend-min-up-days", type=int, default=4)
     parser.add_argument("--trend-min-return", type=float, default=0.03)
+    parser.add_argument("--signal-return-lookback", type=int, default=4)
     parser.add_argument("--waterline-ma-window", type=int, default=20)
     parser.add_argument("--ma-slope-lookback", type=int, default=3)
     parser.add_argument("--above-ratio", type=float, default=0.8)
@@ -419,6 +445,7 @@ def main() -> int:
             args.trend_lookback,
             args.trend_min_up_days,
             args.trend_min_return,
+            args.signal_return_lookback,
             args.waterline_ma_window,
             args.ma_slope_lookback,
         )
@@ -437,6 +464,7 @@ def main() -> int:
                 args.trend_lookback,
                 args.trend_min_up_days,
                 args.trend_min_return,
+                args.signal_return_lookback,
                 args.waterline_ma_window,
                 args.ma_slope_lookback,
                 args.above_ratio,
