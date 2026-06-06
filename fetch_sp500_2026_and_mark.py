@@ -451,7 +451,7 @@ def fetch_twelve_data_bars(
         "apikey": api_key,
         "order": "ASC",
         "timezone": "America/New_York",
-        "adjust": "splits",
+        "adjust": "all",
     }
     if end:
         params["end_date"] = end
@@ -492,7 +492,7 @@ def fetch_twelve_data_vwap(
         "apikey": api_key,
         "order": "ASC",
         "timezone": "America/New_York",
-        "adjust": "splits",
+        "adjust": "all",
     }
     if end:
         params["end_date"] = end
