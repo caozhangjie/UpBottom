@@ -78,11 +78,9 @@ def candidate_kwargs(args: argparse.Namespace) -> dict:
     return {
         "volume_lookback": args.volume_lookback,
         "volume_multiple": args.volume_multiple,
-        "candle_k": args.candle_k,
         "trend_lookback": args.trend_lookback,
         "trend_min_up_days": args.trend_min_up_days,
         "trend_min_return": args.trend_min_return,
-        "signal_return_lookback": args.signal_return_lookback,
         "ma_window": args.waterline_ma_window,
         "ma_slope_lookback": args.ma_slope_lookback,
     }
@@ -115,7 +113,7 @@ def format_signal(candidate, metadata: dict[str, dict[str, str]]) -> str:
             f"水位线/reference: {fmt_price(candidate.signal_close)}",
             f"成交量倍数: {candidate.volume_ratio:.2f}",
             f"小升浪: {candidate.trend_lookback}日内上涨{candidate.trend_up_days}天，涨幅 {fmt_ratio(candidate.trend_return)}",
-            f"信号日涨幅: {fmt_ratio(candidate.signal_return)}，高于前{candidate.signal_return_lookback}天",
+            f"信号日涨幅: {fmt_ratio(candidate.signal_return)}，高于前{candidate.trend_lookback - 1}天",
             f"MA{candidate.ma_window}: {fmt_price(candidate.ma_price)}，斜率 {fmt_ratio(candidate.ma_slope)}",
             f"交易日: {candidate.trade_date}",
         ]
@@ -131,7 +129,7 @@ def format_trade(entry, metadata: dict[str, dict[str, str]], server_position: di
             f"水位线/reference: {fmt_price(entry.signal_close)}",
             f"站上比例: {fmt_ratio(entry.minute_above_ratio)} ({entry.minute_above}/{entry.minute_total})",
             f"小升浪: {entry.trend_lookback}日内上涨{entry.trend_up_days}天，涨幅 {fmt_ratio(entry.trend_return)}",
-            f"信号日涨幅: {fmt_ratio(entry.signal_return)}，高于前{entry.signal_return_lookback}天",
+            f"信号日涨幅: {fmt_ratio(entry.signal_return)}，高于前{entry.trend_lookback - 1}天",
             f"MA{entry.ma_window}: {fmt_price(entry.ma_price)}，斜率 {fmt_ratio(entry.ma_slope)}",
             f"参考买入: {entry.entry_time} close {fmt_price(entry.entry_price)}",
         ]
@@ -300,10 +298,9 @@ def collect_messages(args: argparse.Namespace) -> tuple[dict[str, list[str]], co
                     "planned_entry_date": entry.trade_date,
                     "trend_lookback": entry.trend_lookback,
                     "trend_up_days": entry.trend_up_days,
-                    "trend_return": entry.trend_return,
-                    "signal_return": entry.signal_return,
-                    "signal_return_lookback": entry.signal_return_lookback,
-                    "entry_confirm_price": entry.entry_price,
+                        "trend_return": entry.trend_return,
+                        "signal_return": entry.signal_return,
+                        "entry_confirm_price": entry.entry_price,
                     "sell_ma_window": args.sell_ma_window,
                     "created_at": datetime.now().isoformat(timespec="seconds"),
                 }
@@ -322,12 +319,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--daily-dir", type=Path, default=DATA_ROOT / "1day")
     parser.add_argument("--start", default="2000-01-01")
     parser.add_argument("--volume-lookback", type=int, default=10)
-    parser.add_argument("--volume-multiple", type=float, default=1.2)
-    parser.add_argument("--candle-k", type=float, default=0.0)
-    parser.add_argument("--trend-lookback", type=int, default=5)
-    parser.add_argument("--trend-min-up-days", type=int, default=4)
-    parser.add_argument("--trend-min-return", type=float, default=0.03)
-    parser.add_argument("--signal-return-lookback", type=int, default=4)
+    parser.add_argument("--volume-multiple", type=float, default=1.5)
+    parser.add_argument("--trend-lookback", type=int, default=10)
+    parser.add_argument("--trend-min-up-days", type=int, default=6)
+    parser.add_argument("--trend-min-return", type=float, default=0.08)
     parser.add_argument("--waterline-ma-window", type=int, default=20)
     parser.add_argument("--ma-slope-lookback", type=int, default=3)
     parser.add_argument("--above-ratio", type=float, default=0.8)
