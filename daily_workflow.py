@@ -60,6 +60,11 @@ def prepare_tmp_minutes(args: argparse.Namespace) -> None:
         volume_lookback=args.volume_lookback,
         volume_multiple=args.volume_multiple,
         candle_k=args.candle_k,
+        trend_lookback=args.trend_lookback,
+        trend_min_up_days=args.trend_min_up_days,
+        trend_min_return=args.trend_min_return,
+        waterline_ma_window=args.waterline_ma_window,
+        ma_slope_lookback=args.ma_slope_lookback,
     )
     symbols.update(waterline_push.collect_required_tmp_symbols(waterline_args, args.date))
     symbols.update(bottom_trade_push.collect_required_tmp_symbols(args.date))
@@ -122,6 +127,26 @@ def run_waterline(args: argparse.Namespace) -> None:
         str(args.above_ratio),
         "--min-minutes",
         str(args.min_minutes),
+        "--sell-ma-window",
+        str(args.waterline_sell_ma_window),
+        "--sell-below-ratio",
+        str(args.waterline_sell_below_ratio),
+        "--volume-lookback",
+        str(args.volume_lookback),
+        "--volume-multiple",
+        str(args.volume_multiple),
+        "--candle-k",
+        str(args.candle_k),
+        "--trend-lookback",
+        str(args.trend_lookback),
+        "--trend-min-up-days",
+        str(args.trend_min_up_days),
+        "--trend-min-return",
+        str(args.trend_min_return),
+        "--waterline-ma-window",
+        str(args.waterline_ma_window),
+        "--ma-slope-lookback",
+        str(args.ma_slope_lookback),
     ]
     if args.symbols_file:
         command.extend(["--symbols-file", str(args.symbols_file)])
@@ -161,8 +186,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ma-window", type=int, default=5)
     parser.add_argument("--min-minutes", type=int, default=300)
     parser.add_argument("--volume-lookback", type=int, default=10)
-    parser.add_argument("--volume-multiple", type=float, default=2.0)
-    parser.add_argument("--candle-k", type=float, default=1.2)
+    parser.add_argument("--volume-multiple", type=float, default=1.2)
+    parser.add_argument("--candle-k", type=float, default=0.0)
+    parser.add_argument("--trend-lookback", type=int, default=5)
+    parser.add_argument("--trend-min-up-days", type=int, default=4)
+    parser.add_argument("--trend-min-return", type=float, default=0.03)
+    parser.add_argument("--waterline-ma-window", type=int, default=20)
+    parser.add_argument("--ma-slope-lookback", type=int, default=3)
+    parser.add_argument("--waterline-sell-ma-window", type=int, default=20)
+    parser.add_argument("--waterline-sell-below-ratio", type=float, default=0.5)
     parser.add_argument("--above-ratio", type=float, default=0.8)
     return parser.parse_args()
 

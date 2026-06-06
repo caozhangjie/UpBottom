@@ -131,12 +131,16 @@ The structure must not trigger `B_FAIL` from `CM_time` through the C confirmatio
 
 ### Waterline
 
-Signal day:
+Waterline is a trend-continuation setup. The signal day looks for a small rising wave before the possible main wave:
 
 ```text
+trend_lookback = 5
+trend_up_days >= 4
+signal close / first close in trend window - 1 >= 0.03
 close > open
-close - low > 1.2 * (high - close)
-volume >= mean(previous 10 daily volumes) * 2
+close >= MA20
+MA20 is above its value 3 trading days ago
+volume >= mean(previous 10 daily volumes) * 1.2
 reference_price = signal day close
 ```
 
@@ -149,7 +153,7 @@ trade-day confirmation if above_ratio >= 0.8 and minute bars >= 300
 
 ### Sell Rule
 
-Bottom-trade sell checks only open positions:
+Bottom-trade sell checks only open bottom-divergence positions:
 
 ```text
 ma5_price = mean(close of previous 5 completed daily bars)
@@ -162,6 +166,16 @@ planned sell = next trading day open
 ```
 
 If both rules trigger on the same day, MA5 takes priority.
+
+Waterline sell checks only open waterline trend positions:
+
+```text
+ma20_price = mean(close of previous 20 completed daily bars)
+ma20_below_ratio = count(1min close < ma20_price) / count(1min bars)
+
+sell signal if ma20_below_ratio >= 0.5 and minute bars >= 300
+planned sell = next trading day open
+```
 
 ## Server Setup
 
@@ -291,6 +305,7 @@ Important files:
 ```text
 bottom_trade_positions.json       # open/closed bottom C-confirm trade state
 bottom_trade_daily_cache.json     # daily bottom buy/sell dedupe
+waterline_positions.json          # open/closed waterline trend trade state
 waterline_push_cache.json         # waterline signal/trade dedupe
 bottom_history_push_cache.json    # manual historical BM-break dedupe
 ```

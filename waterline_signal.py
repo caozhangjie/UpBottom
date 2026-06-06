@@ -1,9 +1,9 @@
-"""Waterline signal scanner.
+"""Waterline trend signal scanner.
 
 This module is intentionally separate from the bottom-divergence scanner. It
-only finds waterline candidates and confirmed entries:
+finds trend-style waterline candidates and confirmed entries:
 
-- candidate: signal day with a strong bullish daily candle and volume expansion
+- candidate: a small rising wave, with price above a rising MA20
 - entry: next trading day has enough minute closes above signal close
 """
 
@@ -31,6 +31,13 @@ class WaterlineEntry:
     prior_volume_avg: float
     volume_ratio: float
     candle_k: float
+    trend_lookback: int
+    trend_up_days: int
+    trend_return: float
+    ma_window: int
+    ma_price: float
+    ma_slope_lookback: int
+    ma_slope: float
     trade_date: str
     minute_timeframe: str
     minute_total: int
@@ -53,6 +60,13 @@ class WaterlineCandidate:
     prior_volume_avg: float
     volume_ratio: float
     candle_k: float
+    trend_lookback: int
+    trend_up_days: int
+    trend_return: float
+    ma_window: int
+    ma_price: float
+    ma_slope_lookback: int
+    ma_slope: float
     trade_date: str
     trade_time: str
     trade_close: float
@@ -98,15 +112,53 @@ def rows_by_date(rows: list[Row]) -> dict[str, list[Row]]:
     return out
 
 
-def is_signal_day(row: Row, prior_rows: list[Row], volume_multiple: float, candle_k: float) -> tuple[bool, float, float]:
-    if len(prior_rows) < 1:
-        return False, 0.0, 0.0
-    prior_volume_avg = sum(item.volume for item in prior_rows) / len(prior_rows)
+@dataclass(frozen=True)
+class WaterlineSignalMetrics:
+    prior_volume_avg: float
+    volume_ratio: float
+    trend_up_days: int
+    trend_return: float
+    ma_price: float
+    ma_slope: float
+
+
+def average(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def is_signal_day(
+    row: Row,
+    prior_rows: list[Row],
+    volume_lookback: int,
+    volume_multiple: float,
+    candle_k: float,
+    trend_lookback: int,
+    trend_min_up_days: int,
+    trend_min_return: float,
+    ma_window: int,
+    ma_slope_lookback: int,
+) -> tuple[bool, WaterlineSignalMetrics]:
+    empty = WaterlineSignalMetrics(0.0, 0.0, 0, 0.0, 0.0, 0.0)
+    min_prior = max(volume_lookback, trend_lookback - 1, ma_window + ma_slope_lookback - 1)
+    if len(prior_rows) < min_prior:
+        return False, empty
+    prior_volume_rows = prior_rows[-volume_lookback:]
+    prior_volume_avg = sum(item.volume for item in prior_volume_rows) / len(prior_volume_rows)
     volume_ratio = row.volume / prior_volume_avg if prior_volume_avg > 0 else 0.0
+    trend_rows = prior_rows[-(trend_lookback - 1) :] + [row]
+    trend_up_days = sum(1 for prev, curr in zip(trend_rows, trend_rows[1:]) if curr.close > prev.close)
+    trend_return = row.close / trend_rows[0].close - 1 if trend_rows[0].close > 0 else 0.0
+    ma_rows = prior_rows[-(ma_window + ma_slope_lookback - 1) :] + [row]
+    ma_price = average([item.close for item in ma_rows[-ma_window:]])
+    prior_ma = average([item.close for item in ma_rows[-(ma_window + ma_slope_lookback) : -ma_slope_lookback]])
+    ma_slope = ma_price / prior_ma - 1 if prior_ma > 0 else 0.0
     upper_shadow = max(row.high - row.close, 0.0)
-    bullish_shape = row.close > row.open and row.close - row.low > candle_k * upper_shadow
+    bullish_shape = row.close > row.open and (candle_k <= 0 or row.close - row.low > candle_k * upper_shadow)
     enough_volume = prior_volume_avg > 0 and volume_ratio >= volume_multiple
-    return bullish_shape and enough_volume, prior_volume_avg, volume_ratio
+    trend_ok = trend_up_days >= trend_min_up_days and trend_return >= trend_min_return
+    ma_ok = ma_price > 0 and row.close >= ma_price and ma_slope > 0
+    metrics = WaterlineSignalMetrics(prior_volume_avg, volume_ratio, trend_up_days, trend_return, ma_price, ma_slope)
+    return bullish_shape and enough_volume and trend_ok and ma_ok, metrics
 
 
 def minute_above_ratio(rows: list[Row], waterline: float) -> tuple[int, int, float]:
@@ -123,6 +175,11 @@ def scan_symbol_entries(
     volume_lookback: int,
     volume_multiple: float,
     candle_k: float,
+    trend_lookback: int,
+    trend_min_up_days: int,
+    trend_min_return: float,
+    ma_window: int,
+    ma_slope_lookback: int,
     above_ratio_threshold: float,
     min_minutes: int,
     minute_timeframe: str,
@@ -132,8 +189,19 @@ def scan_symbol_entries(
     for index in range(volume_lookback, len(daily_rows) - 1):
         signal_row = daily_rows[index]
         trade_row = daily_rows[index + 1]
-        prior_rows = daily_rows[index - volume_lookback : index]
-        ok, prior_volume_avg, volume_ratio = is_signal_day(signal_row, prior_rows, volume_multiple, candle_k)
+        prior_rows = daily_rows[:index]
+        ok, metrics = is_signal_day(
+            signal_row,
+            prior_rows,
+            volume_lookback,
+            volume_multiple,
+            candle_k,
+            trend_lookback,
+            trend_min_up_days,
+            trend_min_return,
+            ma_window,
+            ma_slope_lookback,
+        )
         if not ok:
             continue
         trade_date = trade_row.datetime[:10]
@@ -151,9 +219,16 @@ def scan_symbol_entries(
                 signal_low=signal_row.low,
                 signal_close=signal_row.close,
                 signal_volume=signal_row.volume,
-                prior_volume_avg=prior_volume_avg,
-                volume_ratio=volume_ratio,
+                prior_volume_avg=metrics.prior_volume_avg,
+                volume_ratio=metrics.volume_ratio,
                 candle_k=candle_k,
+                trend_lookback=trend_lookback,
+                trend_up_days=metrics.trend_up_days,
+                trend_return=metrics.trend_return,
+                ma_window=ma_window,
+                ma_price=metrics.ma_price,
+                ma_slope_lookback=ma_slope_lookback,
+                ma_slope=metrics.ma_slope,
                 trade_date=trade_date,
                 minute_timeframe=minute_timeframe,
                 minute_total=total,
@@ -172,13 +247,29 @@ def scan_symbol_candidates(
     volume_lookback: int,
     volume_multiple: float,
     candle_k: float,
+    trend_lookback: int,
+    trend_min_up_days: int,
+    trend_min_return: float,
+    ma_window: int,
+    ma_slope_lookback: int,
 ) -> list[WaterlineCandidate]:
     candidates: list[WaterlineCandidate] = []
     for index in range(volume_lookback, len(daily_rows) - 1):
         signal_row = daily_rows[index]
         trade_row = daily_rows[index + 1]
-        prior_rows = daily_rows[index - volume_lookback : index]
-        ok, prior_volume_avg, volume_ratio = is_signal_day(signal_row, prior_rows, volume_multiple, candle_k)
+        prior_rows = daily_rows[:index]
+        ok, metrics = is_signal_day(
+            signal_row,
+            prior_rows,
+            volume_lookback,
+            volume_multiple,
+            candle_k,
+            trend_lookback,
+            trend_min_up_days,
+            trend_min_return,
+            ma_window,
+            ma_slope_lookback,
+        )
         if not ok:
             continue
         candidates.append(
@@ -191,9 +282,16 @@ def scan_symbol_candidates(
                 signal_low=signal_row.low,
                 signal_close=signal_row.close,
                 signal_volume=signal_row.volume,
-                prior_volume_avg=prior_volume_avg,
-                volume_ratio=volume_ratio,
+                prior_volume_avg=metrics.prior_volume_avg,
+                volume_ratio=metrics.volume_ratio,
                 candle_k=candle_k,
+                trend_lookback=trend_lookback,
+                trend_up_days=metrics.trend_up_days,
+                trend_return=metrics.trend_return,
+                ma_window=ma_window,
+                ma_price=metrics.ma_price,
+                ma_slope_lookback=ma_slope_lookback,
+                ma_slope=metrics.ma_slope,
                 trade_date=trade_row.datetime[:10],
                 trade_time=trade_row.datetime,
                 trade_close=trade_row.close,
@@ -224,6 +322,13 @@ def confirm_candidate_entry(
         prior_volume_avg=candidate.prior_volume_avg,
         volume_ratio=candidate.volume_ratio,
         candle_k=candidate.candle_k,
+        trend_lookback=candidate.trend_lookback,
+        trend_up_days=candidate.trend_up_days,
+        trend_return=candidate.trend_return,
+        ma_window=candidate.ma_window,
+        ma_price=candidate.ma_price,
+        ma_slope_lookback=candidate.ma_slope_lookback,
+        ma_slope=candidate.ma_slope,
         trade_date=candidate.trade_date,
         minute_timeframe=minute_timeframe,
         minute_total=total,
@@ -274,8 +379,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minute-timeframe", default="1min")
     parser.add_argument("--start", default="2000-01-01")
     parser.add_argument("--volume-lookback", type=int, default=10)
-    parser.add_argument("--volume-multiple", type=float, default=2.0)
-    parser.add_argument("--candle-k", type=float, default=1.2)
+    parser.add_argument("--volume-multiple", type=float, default=1.2)
+    parser.add_argument("--candle-k", type=float, default=0.0)
+    parser.add_argument("--trend-lookback", type=int, default=5)
+    parser.add_argument("--trend-min-up-days", type=int, default=4)
+    parser.add_argument("--trend-min-return", type=float, default=0.03)
+    parser.add_argument("--waterline-ma-window", type=int, default=20)
+    parser.add_argument("--ma-slope-lookback", type=int, default=3)
     parser.add_argument("--above-ratio", type=float, default=0.8)
     parser.add_argument("--min-minutes", type=int, default=1)
     parser.add_argument("--output", type=Path, default=OUTPUT_ROOT / "waterline_entries.csv")
@@ -306,6 +416,11 @@ def main() -> int:
             args.volume_lookback,
             args.volume_multiple,
             args.candle_k,
+            args.trend_lookback,
+            args.trend_min_up_days,
+            args.trend_min_return,
+            args.waterline_ma_window,
+            args.ma_slope_lookback,
         )
         candidates.extend(symbol_candidates)
         if not minute_path.exists():
@@ -319,6 +434,11 @@ def main() -> int:
                 args.volume_lookback,
                 args.volume_multiple,
                 args.candle_k,
+                args.trend_lookback,
+                args.trend_min_up_days,
+                args.trend_min_return,
+                args.waterline_ma_window,
+                args.ma_slope_lookback,
                 args.above_ratio,
                 args.min_minutes,
                 args.minute_timeframe,
