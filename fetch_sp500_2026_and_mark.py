@@ -685,14 +685,14 @@ def repair_split_jumps(
     end: str | None,
     workers: int,
     ratio: float,
+    fetch_timeframes: Iterable[str] = TIMEFRAMES,
 ) -> list[dict[str, str]]:
     repair_rows: list[dict[str, str]] = []
-    affected: dict[str, dict[str, str]] = {}
+    affected: dict[str, dict[str, str]] = dict(sorted(metadata.items()))
+    selected_timeframes = set(fetch_timeframes)
     for symbol, item in sorted(metadata.items()):
         path = DATA_ROOT / "1day" / f"{symbol}_1day_indicators.csv"
-        if not path.exists():
-            continue
-        events = price_jump_events(load_rows(path, min_date=start), ratio)
+        events = price_jump_events(load_rows(path, min_date=start), ratio) if path.exists() else []
         for event in events:
             repair_rows.append(
                 {
@@ -700,20 +700,35 @@ def repair_split_jumps(
                     "source_symbol": item.get("source_symbol", symbol),
                     "timeframe": "1day",
                     **event,
-                    "action": "queued_full_refresh",
+                    "action": "detected_jump_during_full_refresh",
                 }
             )
-        if events:
-            affected[symbol] = item
+        if not events:
+            repair_rows.append(
+                {
+                    "symbol": symbol,
+                    "source_symbol": item.get("source_symbol", symbol),
+                    "timeframe": "1day",
+                    "datetime": "",
+                    "previous_datetime": "",
+                    "previous_close": "",
+                    "close": "",
+                    "jump_ratio": "",
+                    "action": "queued_full_refresh_all",
+                }
+            )
 
     if not affected:
         write_split_repair_csv([], OUTPUT_ROOT / "split_jump_repairs.csv")
         print("split_jump_repairs=0")
         return []
 
-    print(f"split_jump_repairs={len(affected)} threshold={ratio:g}")
+    print(
+        f"split_jump_full_refreshes={len(affected)} threshold={ratio:g} "
+        f"fetch_timeframes={','.join(sorted(selected_timeframes))}"
+    )
     for symbol in affected:
-        for timeframe in TIMEFRAMES:
+        for timeframe in selected_timeframes:
             path = DATA_ROOT / timeframe / f"{symbol}_{timeframe}_indicators.csv"
             if path.exists():
                 path.unlink()
@@ -730,6 +745,7 @@ def repair_split_jumps(
                 provider,
                 api_key,
                 0,
+                selected_timeframes,
             ): symbol
             for symbol, item in affected.items()
         }
@@ -1177,6 +1193,7 @@ def main() -> int:
                 args.end,
                 args.workers,
                 args.split_jump_ratio,
+                args.fetch_timeframes,
             )
 
     records = scan_and_mark(symbol_filter, render_charts=args.render_charts)
