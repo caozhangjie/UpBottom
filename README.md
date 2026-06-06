@@ -18,16 +18,16 @@ Active scheduled jobs:
 
 - Daily data update and bottom-divergence scan: `daily_workflow.py --step fetch-scan`
 - Shared temporary 1min download: `daily_workflow.py --step prepare-tmp`
+- Bottom-divergence historical BM-break push: `daily_workflow.py --step bottom-history`
 - Bottom-divergence C-confirm buy/sell push: `daily_workflow.py --step bottom-trade`
 - Waterline signal-day/trade-day push: `daily_workflow.py --step waterline`
 - Temporary 1min cleanup: `daily_workflow.py --step cleanup`
 - Off-hours split-adjustment repair: `fetch_sp500_2026_and_mark.py --repair-split-jumps`
-- Monthly metadata refresh: `fetch_sp500_2026_and_mark.py --refresh-metadata`
 
 Paused/manual:
 
 - 4h fetching is not scheduled.
-- Bottom-divergence historical push is not scheduled; run `daily_workflow.py --step bottom-history` manually if needed.
+- Monthly S&P 500 metadata refresh is not scheduled when using `/data/UpBottom/symbols.csv`.
 - Chart rendering is manual: `fetch_sp500_2026_and_mark.py --skip-fetch --render-charts`.
 
 ## Runtime Layout
@@ -242,26 +242,26 @@ Robust split workflow:
 ```cron
 # Beijing time. US Monday-Friday sessions are processed on Beijing Tuesday-Saturday mornings.
 
-# 1. Update 1day cache and rescan ad_signals.csv.
-40 5 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step fetch-scan --start 2025-10-01 --overlap-days 10 --workers 2 >> /data/UpBottom/logs/upbottom_fetch_scan.log 2>&1
+# 1. Update 1day cache, merge VWAP, and rescan ad_signals.csv with the custom symbol list.
+40 5 * * 2-6 /bin/bash -lc 'source /root/miniconda3/etc/profile.d/conda.sh; conda activate myenv; cd /root/UpBottom; python daily_workflow.py --step fetch-scan --symbols-file /data/UpBottom/symbols.csv --start 2024-01-01 --overlap-days 10 --workers 2 --fetch-timeframes 1day' >> /data/UpBottom/logs/upbottom_fetch_scan.log 2>&1
 
 # 2. Download shared temporary 1min data once.
-55 5 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step prepare-tmp >> /data/UpBottom/logs/upbottom_prepare_tmp.log 2>&1
+55 5 * * 2-6 /bin/bash -lc 'source /root/miniconda3/etc/profile.d/conda.sh; conda activate myenv; cd /root/UpBottom; python daily_workflow.py --step prepare-tmp' >> /data/UpBottom/logs/upbottom_prepare_tmp.log 2>&1
 
-# 3. Push bottom-divergence C-confirm buy/sell signals.
-30 6 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step bottom-trade >> /data/UpBottom/logs/upbottom_bottom_trade.log 2>&1
+# 3. Push bottom-divergence historical BM-break signals.
+10 6 * * 2-6 /bin/bash -lc 'source /root/miniconda3/etc/profile.d/conda.sh; conda activate myenv; cd /root/UpBottom; python daily_workflow.py --step bottom-history' >> /data/UpBottom/logs/upbottom_bottom_history.log 2>&1
 
-# 4. Push waterline signal-day and trade-day signals.
-30 7 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step waterline >> /data/UpBottom/logs/upbottom_waterline.log 2>&1
+# 4. Push bottom-divergence C-confirm buy/sell signals.
+30 6 * * 2-6 /bin/bash -lc 'source /root/miniconda3/etc/profile.d/conda.sh; conda activate myenv; cd /root/UpBottom; python daily_workflow.py --step bottom-trade' >> /data/UpBottom/logs/upbottom_bottom_trade.log 2>&1
 
-# 5. Cleanup temporary 1min files.
-00 9 * * 2-6 cd /root/UpBottom && python daily_workflow.py --step cleanup >> /data/UpBottom/logs/upbottom_cleanup.log 2>&1
+# 5. Push waterline signal-day and trade-day signals.
+30 7 * * 2-6 /bin/bash -lc 'source /root/miniconda3/etc/profile.d/conda.sh; conda activate myenv; cd /root/UpBottom; python daily_workflow.py --step waterline' >> /data/UpBottom/logs/upbottom_waterline.log 2>&1
 
-# 6. Off-hours split-adjustment maintenance.
-30 16 * * 2-6 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --overlap-days 10 --workers 2 --repair-split-jumps --fetch-timeframes 1day >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
+# 6. Cleanup temporary 1min files.
+00 9 * * 2-6 /bin/bash -lc 'source /root/miniconda3/etc/profile.d/conda.sh; conda activate myenv; cd /root/UpBottom; python daily_workflow.py --step cleanup' >> /data/UpBottom/logs/upbottom_cleanup.log 2>&1
 
-# 7. Monthly metadata refresh: first Sunday of each month.
-15 10 1-7 * 0 cd /root/UpBottom && python fetch_sp500_2026_and_mark.py --start 2025-10-01 --refresh-metadata --overlap-days 10 --workers 2 --fetch-timeframes 1day >> /data/UpBottom/logs/upbottom_metadata.log 2>&1
+# 7. Off-hours split-adjustment maintenance, also using the custom symbol list.
+30 16 * * 2-6 /bin/bash -lc 'source /root/miniconda3/etc/profile.d/conda.sh; conda activate myenv; cd /root/UpBottom; python fetch_sp500_2026_and_mark.py --symbols-file /data/UpBottom/symbols.csv --start 2024-01-01 --overlap-days 10 --workers 2 --repair-split-jumps --fetch-timeframes 1day' >> /data/UpBottom/logs/upbottom_split_repair.log 2>&1
 ```
 
 For a custom universe, add this to workflow commands:
