@@ -13,6 +13,7 @@ This branch does not contain backtest entry scripts.
 ## Production Scope
 
 Production currently uses daily bars only.
+All production scripts that accept `--date` default to Beijing today minus one day. The server runs in Beijing time, so the morning workflow normally processes the previous US trading session.
 
 Active scheduled jobs:
 
@@ -292,6 +293,7 @@ python daily_workflow.py --step bottom-history
 ```
 
 Cron should use split steps so one failed job does not prevent later jobs or cleanup from running.
+The cron commands do not pass `--date`; they rely on the shared default of Beijing today minus one day. Use `--date YYYY-MM-DD` only for manual replays or repairs.
 
 ## Push State
 

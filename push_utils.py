@@ -60,6 +60,10 @@ def today_text() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def prior_date_text() -> str:
+    return (parse_date(today_text()) - timedelta(days=1)).isoformat()
+
+
 def state_path(name: str) -> Path:
     return PUSH_STATE_ROOT / name
 

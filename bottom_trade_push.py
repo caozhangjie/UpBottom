@@ -29,11 +29,11 @@ from push_utils import (
     load_sent_cache,
     mark_sent,
     parse_date,
+    prior_date_text,
     save_sent_cache,
     send_or_print,
     state_path,
     stock_label,
-    today_text,
 )
 
 
@@ -229,7 +229,7 @@ def process_trade_signals(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Push daily bottom-divergence C-confirm buy/sell signals to Feishu.")
-    parser.add_argument("--date", default=today_text())
+    parser.add_argument("--date", default=prior_date_text())
     parser.add_argument("--signals", type=Path, default=OUTPUT_ROOT / "ad_signals.csv")
     parser.add_argument("--cache", type=Path, default=state_path("bottom_trade_daily_cache.json"))
     parser.add_argument("--exit-below-ratio", type=float, default=0.5)

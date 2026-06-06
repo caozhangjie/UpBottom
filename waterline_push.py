@@ -16,12 +16,12 @@ from push_utils import (
     load_sent_cache,
     mark_sent,
     parse_date,
+    prior_date_text,
     save_json,
     save_sent_cache,
     send_or_print,
     state_path,
     stock_label,
-    today_text,
 )
 from waterline_signal import (
     available_daily_symbols,
@@ -336,7 +336,7 @@ def collect_messages(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Push waterline trend signal, trade, and MA20 sell confirmations to Feishu.")
-    parser.add_argument("--date", default=today_text())
+    parser.add_argument("--date", default=prior_date_text())
     parser.add_argument("--symbols", nargs="*", default=None)
     parser.add_argument("--symbols-file", type=Path, default=None)
     parser.add_argument("--daily-dir", type=Path, default=DATA_ROOT / "1day")
