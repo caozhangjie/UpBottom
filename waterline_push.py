@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 from datetime import datetime
 from pathlib import Path
 
@@ -204,29 +205,41 @@ def collect_sell_messages(
     sent: dict[str, dict],
     positions: dict[str, dict],
     metadata: dict[str, dict[str, str]],
+    stats: collections.Counter,
 ) -> tuple[list[str], list[str]]:
     messages: list[str] = []
     keys: list[str] = []
-    for symbol, position in list(open_positions(positions).items()):
+    open_items = open_positions(positions)
+    stats["sell_open_positions"] = len(open_items)
+    for symbol, position in list(open_items.items()):
+        stats["sell_positions_checked"] += 1
         daily_path = args.daily_dir / f"{symbol}_1day_indicators.csv"
         if not daily_path.exists():
+            stats["sell_missing_daily"] += 1
             continue
         daily_rows = load_rows(daily_path, min_date=args.start)
         maybe_fill_entry(position, daily_rows, args.date)
         entry_date = str(position.get("entry_date") or position.get("planned_entry_date") or "")
         if not entry_date or parse_date(args.date) < parse_date(entry_date):
+            stats["sell_not_ready"] += 1
             positions[symbol] = position
             continue
         key = sell_key(symbol, args.date)
         if not args.force and key in sent:
+            stats["sell_skipped_cache"] += 1
             continue
         ma_price = prior_ma_by_date(daily_rows, args.sell_ma_window).get(args.date)
         if ma_price is None:
+            stats["sell_missing_ma"] += 1
             positions[symbol] = position
             continue
         minute_rows = [row for row in load_tmp_minutes(symbol, args.date) if row.datetime[:10] == args.date]
         total, below, ratio = below_ratio(minute_rows, ma_price)
         if total < args.min_minutes or ratio < args.sell_below_ratio:
+            if total < args.min_minutes:
+                stats["sell_insufficient_minutes"] += 1
+            else:
+                stats["sell_not_triggered"] += 1
             positions[symbol] = position
             continue
         next_row = next_daily_row_after(daily_rows, args.date)
@@ -246,40 +259,53 @@ def collect_sell_messages(
         positions[symbol] = position
         messages.append(format_sell(symbol, position, args.date, ma_price, below, total, ratio, planned_exit_date, metadata))
         keys.append(key)
+        stats["sell_messages"] += 1
     return messages, keys
 
 
 def collect_messages(
     args: argparse.Namespace,
     sent: dict[str, dict],
-) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], collections.Counter]:
     metadata = load_metadata()
     positions = load_positions()
+    stats: collections.Counter = collections.Counter()
     messages: dict[str, list[str]] = {"signal": [], "trade": [], "sell": []}
     keys: dict[str, list[str]] = {"signal": [], "trade": [], "sell": []}
-    messages["sell"], keys["sell"] = collect_sell_messages(args, sent, positions, metadata)
+    messages["sell"], keys["sell"] = collect_sell_messages(args, sent, positions, metadata, stats)
 
-    for symbol in symbols_from_args(args):
+    symbols = symbols_from_args(args)
+    stats["symbols"] = len(symbols)
+    for symbol in symbols:
         daily_path = args.daily_dir / f"{symbol}_1day_indicators.csv"
         if not daily_path.exists():
+            stats["missing_daily"] += 1
             continue
         daily_rows = load_rows(daily_path, min_date=args.start)
         for candidate in scan_symbol_candidates(symbol, daily_rows, **candidate_kwargs(args)):
+            stats["candidates_total"] += 1
             if candidate.signal_date == args.date and args.include_signal_day:
+                stats["signal_candidates_today"] += 1
                 key = signal_key(symbol, candidate.signal_date, candidate.trade_date)
                 if args.force or key not in sent:
                     messages["signal"].append(format_signal(candidate, metadata))
                     keys["signal"].append(key)
+                    stats["signal_messages"] += 1
+                else:
+                    stats["signal_skipped_cache"] += 1
             if candidate.trade_date != args.date:
                 continue
+            stats["trade_candidates_today"] += 1
             trade_minutes = load_tmp_minutes(symbol, args.date)
             entry = confirm_candidate_entry(candidate, trade_minutes, args.above_ratio, args.min_minutes, "1min")
             if not entry:
+                stats["trade_not_confirmed"] += 1
                 continue
             key = trade_key(symbol, entry.signal_date, entry.trade_date)
             if args.force or key not in sent:
                 messages["trade"].append(format_trade(entry, metadata))
                 keys["trade"].append(key)
+                stats["trade_messages"] += 1
                 if not has_open_position(positions, symbol):
                     positions[symbol] = {
                         "status": "OPEN",
@@ -299,9 +325,13 @@ def collect_messages(
                         "sell_ma_window": args.sell_ma_window,
                         "created_at": datetime.now().isoformat(timespec="seconds"),
                     }
+                else:
+                    stats["trade_open_position_exists"] += 1
+            else:
+                stats["trade_skipped_cache"] += 1
     if not args.dry_run:
         save_positions(positions)
-    return messages, keys
+    return messages, keys, stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -336,7 +366,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     sent = load_sent_cache(args.cache)
-    messages_by_type, keys_by_type = collect_messages(args, sent)
+    messages_by_type, keys_by_type, stats = collect_messages(args, sent)
     signal_title = f"[UpBottom waterline trend signal day] {args.date} | {len(messages_by_type['signal'])} messages"
     trade_title = f"[UpBottom waterline trend trade day] {args.date} | {len(messages_by_type['trade'])} messages"
     sell_title = f"[UpBottom waterline MA20 sell] {args.date} | {len(messages_by_type['sell'])} messages"
@@ -372,6 +402,7 @@ def main() -> int:
         f"waterline_sell_messages={len(messages_by_type['sell'])} pushed={sell_pushed} cache={args.cache}",
         flush=True,
     )
+    print("waterline_diagnostics=" + " ".join(f"{key}={stats[key]}" for key in sorted(stats)), flush=True)
     return 0
 
 

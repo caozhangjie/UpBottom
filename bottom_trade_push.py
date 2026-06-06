@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 from datetime import datetime
 from pathlib import Path
 
@@ -117,21 +118,27 @@ def process_trade_signals(
     exit_below_ratio: float,
     ma_window: int,
     min_minutes: int,
-) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, dict]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, dict], collections.Counter]:
     metadata = load_metadata()
     positions = load_positions()
+    stats: collections.Counter = collections.Counter()
     messages: dict[str, list[str]] = {"buy": [], "sell": []}
     keys: dict[str, list[str]] = {"buy": [], "sell": []}
-    symbols_had_open = set(open_positions(positions))
+    open_items = open_positions(positions)
+    symbols_had_open = set(open_items)
+    stats["open_positions"] = len(open_items)
 
-    for symbol, position in list(open_positions(positions).items()):
+    for symbol, position in list(open_items.items()):
+        stats["sell_positions_checked"] += 1
         daily_rows = load_daily_rows(symbol)
         maybe_fill_entry(position, daily_rows, date_text)
         if not can_check_exit(position, date_text):
+            stats["sell_not_ready"] += 1
             positions[symbol] = position
             continue
         key = sell_key(date_text, symbol)
         if not force and key in sent:
+            stats["sell_skipped_cache"] += 1
             continue
         minute_rows = load_tmp_minutes(symbol, date_text)
         check = check_exit_signal(
@@ -144,6 +151,10 @@ def process_trade_signals(
             min_minutes,
         )
         if not check.triggered:
+            if check.minute_total < min_minutes:
+                stats["sell_insufficient_minutes"] += 1
+            else:
+                stats["sell_not_triggered"] += 1
             positions[symbol] = position
             continue
         next_row = next_daily_row_after(daily_rows, date_text)
@@ -163,19 +174,27 @@ def process_trade_signals(
         positions[symbol] = position
         messages["sell"].append(format_sell(symbol, position, check, date_text, metadata, planned_exit_date))
         keys["sell"].append(key)
+        stats["sell_messages"] += 1
 
     buy_rows = [row for row in load_ad_signals(signals_path) if is_trade_buy_candidate(row, date_text)]
+    stats["buy_candidates"] = len(buy_rows)
     buy_rows.sort(key=lambda row: (c_confirm_time(row), row.get("symbol", "")))
     for row in buy_rows:
         symbol = row.get("symbol", "")
-        if not symbol or symbol in symbols_had_open or has_open_position(positions, symbol):
+        if not symbol:
+            stats["buy_missing_symbol"] += 1
+            continue
+        if symbol in symbols_had_open or has_open_position(positions, symbol):
+            stats["buy_skipped_open_position"] += 1
             continue
         key = buy_key(date_text, symbol)
         if not force and key in sent:
+            stats["buy_skipped_cache"] += 1
             continue
         daily_rows = load_daily_rows(symbol)
         confirm_row = c_confirm_row(row, daily_rows)
         if confirm_row is None:
+            stats["buy_missing_confirm_row"] += 1
             continue
         next_row = next_daily_row_after(daily_rows, date_text)
         planned_entry_date = next_row.datetime[:10] if next_row else ""
@@ -203,8 +222,9 @@ def process_trade_signals(
         }
         messages["buy"].append(format_buy(row, metadata, planned_entry_date))
         keys["buy"].append(key)
+        stats["buy_messages"] += 1
 
-    return messages, keys, positions
+    return messages, keys, positions, stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -225,7 +245,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     sent = load_sent_cache(args.cache)
-    messages_by_type, keys_by_type, positions = process_trade_signals(
+    messages_by_type, keys_by_type, positions, stats = process_trade_signals(
         args.date,
         args.signals,
         sent,
@@ -261,6 +281,7 @@ def main() -> int:
         f"bottom_sell_messages={len(messages_by_type['sell'])} pushed={sell_pushed} cache={args.cache}",
         flush=True,
     )
+    print("bottom_diagnostics=" + " ".join(f"{key}={stats[key]}" for key in sorted(stats)), flush=True)
     return 0
 
 
