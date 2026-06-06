@@ -91,6 +91,7 @@ TWELVE_DATA_API_KEY = "your_twelve_data_api_key"
 
 FEISHU_WEBHOOK_WATERLINE_SIGNAL = "your_waterline_signal_day_webhook"
 FEISHU_WEBHOOK_WATERLINE_TRADE = "your_waterline_trade_day_webhook"
+FEISHU_WEBHOOK_WATERLINE_SELL = "your_waterline_sell_day_webhook"
 FEISHU_WEBHOOK_BOTTOM_HISTORY = "your_bottom_history_webhook"
 FEISHU_WEBHOOK_BOTTOM_BUY = "your_bottom_buy_webhook"
 FEISHU_WEBHOOK_BOTTOM_SELL = "your_bottom_sell_webhook"
@@ -364,6 +365,7 @@ Check the specific webhook in `credentials.py`:
 ```text
 FEISHU_WEBHOOK_WATERLINE_SIGNAL
 FEISHU_WEBHOOK_WATERLINE_TRADE
+FEISHU_WEBHOOK_WATERLINE_SELL
 FEISHU_WEBHOOK_BOTTOM_HISTORY
 FEISHU_WEBHOOK_BOTTOM_BUY
 FEISHU_WEBHOOK_BOTTOM_SELL

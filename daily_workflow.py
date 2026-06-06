@@ -211,7 +211,8 @@ def main() -> int:
         f"bottom_buy:{bool(FEISHU_WEBHOOKS.get('bottom_buy'))},"
         f"bottom_sell:{bool(FEISHU_WEBHOOKS.get('bottom_sell'))},"
         f"waterline_signal:{bool(FEISHU_WEBHOOKS.get('waterline_signal'))},"
-        f"waterline_trade:{bool(FEISHU_WEBHOOKS.get('waterline_trade'))}}}",
+        f"waterline_trade:{bool(FEISHU_WEBHOOKS.get('waterline_trade'))},"
+        f"waterline_sell:{bool(FEISHU_WEBHOOKS.get('waterline_sell'))}}}",
         flush=True,
     )
     if args.step == "fetch-scan":

@@ -339,6 +339,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--signal-webhook-url", default=None)
     parser.add_argument("--trade-webhook-url", default=None)
+    parser.add_argument("--sell-webhook-url", default=None)
     return parser.parse_args()
 
 
@@ -363,7 +364,7 @@ def main() -> int:
     sell_pushed = send_or_print(
         sell_title,
         messages_by_type["sell"],
-        args.trade_webhook_url or FEISHU_WEBHOOKS.get("waterline_trade", ""),
+        args.sell_webhook_url or FEISHU_WEBHOOKS.get("waterline_sell", ""),
         args.dry_run,
     )
     print(
