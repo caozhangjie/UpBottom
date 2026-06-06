@@ -50,6 +50,20 @@ def has_open_position(positions: dict[str, dict], symbol: str) -> bool:
     return bool(item and item.get("status") == "OPEN")
 
 
+def position_summary(position: dict | None) -> str:
+    if not position:
+        return "NONE"
+    parts = [str(position.get("status") or "UNKNOWN")]
+    for name in ("strategy", "signal_date", "trade_date", "planned_entry_date", "entry_date"):
+        value = position.get(name)
+        if value:
+            parts.append(f"{name}={value}")
+    reference_price = position.get("reference_price")
+    if reference_price not in (None, ""):
+        parts.append(f"reference={fmt_price(reference_price)}")
+    return " ".join(parts)
+
+
 def symbols_from_args(args: argparse.Namespace) -> list[str]:
     if args.symbols_file:
         return read_symbols_file(args.symbols_file)
@@ -108,8 +122,8 @@ def format_signal(candidate, metadata: dict[str, dict[str, str]]) -> str:
     )
 
 
-def format_trade(entry, metadata: dict[str, dict[str, str]]) -> str:
-    return "\n".join(
+def format_trade(entry, metadata: dict[str, dict[str, str]], server_position: dict | None) -> str:
+    message = "\n".join(
         [
             f"水上漂趋势交易日确认 | {stock_label(entry.symbol, metadata)}",
             f"信号日: {entry.signal_time}",
@@ -122,6 +136,7 @@ def format_trade(entry, metadata: dict[str, dict[str, str]]) -> str:
             f"参考买入: {entry.entry_time} close {fmt_price(entry.entry_price)}",
         ]
     )
+    return message + f"\nServer position state: {position_summary(server_position)}"
 
 
 def format_sell(
@@ -270,7 +285,8 @@ def collect_messages(args: argparse.Namespace) -> tuple[dict[str, list[str]], co
             if not entry:
                 stats["trade_not_confirmed"] += 1
                 continue
-            messages["trade"].append(format_trade(entry, metadata))
+            server_position = positions.get(symbol)
+            messages["trade"].append(format_trade(entry, metadata, server_position))
             stats["trade_messages"] += 1
             if not has_open_position(positions, symbol):
                 positions[symbol] = {

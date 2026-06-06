@@ -127,7 +127,7 @@ reference_price = C confirmation daily close
 planned buy = next trading day open
 ```
 
-New buys are skipped when the same symbol already has an open bottom position. BM and BM-break values are kept in the alert as context, but they are not the production entry trigger.
+New buy alerts are still pushed even when the server already records an open position for the same symbol. The alert includes `Server position state` so stale server state is visible in Feishu. If an open position already exists, the push does not overwrite that position record. BM and BM-break values are kept in the alert as context, but they are not the production entry trigger.
 The structure must not trigger `B_FAIL` from `CM_time` through the C confirmation day.
 
 ### Waterline
@@ -311,7 +311,16 @@ waterline_positions.json          # open/closed waterline trend trade state
 bottom_history_push_cache.json    # manual historical BM-break dedupe
 ```
 
-Bottom trade and waterline daily pushes do not use push-cache dedupe. They only use open/closed position state, so a failed same-day run can be rerun without deleting cache files. Historical bottom BM-break pushes still use `bottom_history_push_cache.json` for daily dedupe.
+Bottom trade and waterline daily pushes do not use push-cache dedupe. They include the server position state in buy/trade alerts, so a stale open position is visible without hiding the alert. Historical bottom BM-break pushes still use `bottom_history_push_cache.json` for daily dedupe.
+
+To clear server position state and start fresh, back up then remove the position files:
+
+```bash
+mkdir -p /data/UpBottom/outputs/push_state/backup
+cp /data/UpBottom/outputs/push_state/bottom_trade_positions.json /data/UpBottom/outputs/push_state/backup/bottom_trade_positions.$(date +%Y%m%d%H%M%S).json 2>/dev/null || true
+cp /data/UpBottom/outputs/push_state/waterline_positions.json /data/UpBottom/outputs/push_state/backup/waterline_positions.$(date +%Y%m%d%H%M%S).json 2>/dev/null || true
+rm -f /data/UpBottom/outputs/push_state/bottom_trade_positions.json /data/UpBottom/outputs/push_state/waterline_positions.json
+```
 
 ## Useful Commands
 

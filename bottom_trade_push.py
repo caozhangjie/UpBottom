@@ -11,7 +11,6 @@ from bottom_common import (
     c_confirm_time,
     check_exit_signal,
     first_c_point,
-    has_open_position,
     is_trade_buy_candidate,
     load_ad_signals,
     load_daily_rows,
@@ -60,7 +59,26 @@ def maybe_fill_entry(position: dict, daily_rows, date_text: str) -> None:
     position["planned_entry_date"] = next_row.datetime[:10]
 
 
-def format_buy(row: dict[str, str], metadata: dict[str, dict[str, str]], planned_entry_date: str) -> str:
+def position_summary(position: dict | None) -> str:
+    if not position:
+        return "NONE"
+    parts = [str(position.get("status") or "UNKNOWN")]
+    for name in ("strategy", "signal_date", "planned_entry_date", "entry_date"):
+        value = position.get(name)
+        if value:
+            parts.append(f"{name}={value}")
+    reference_price = position.get("reference_price")
+    if reference_price not in (None, ""):
+        parts.append(f"reference={fmt_price(reference_price)}")
+    return " ".join(parts)
+
+
+def format_buy(
+    row: dict[str, str],
+    metadata: dict[str, dict[str, str]],
+    planned_entry_date: str,
+    server_position: dict | None,
+) -> str:
     symbol = row.get("symbol", "")
     c_point = first_c_point(row) or {}
     return "\n".join(
@@ -70,6 +88,7 @@ def format_buy(row: dict[str, str], metadata: dict[str, dict[str, str]], planned
             f"C 点: {c_point.get('time') or '-'} @ {fmt_price(c_point.get('price'))}",
             f"C 确认收盘价/reference: {fmt_price(row.get('_c_confirm_close'))}",
             f"BM: {row.get('BM_time') or '-'} @ {fmt_price(row.get('BM_price'))}",
+            f"Server position state: {position_summary(server_position)}",
             f"BM 突破: {row.get('BM_break_time') or '-'} @ {fmt_price(row.get('BM_break_price'))}",
             f"计划执行: {planned_entry_date or '下一交易日'} 开盘买入",
         ]
@@ -110,7 +129,6 @@ def process_trade_signals(
     stats: collections.Counter = collections.Counter()
     messages: dict[str, list[str]] = {"buy": [], "sell": []}
     open_items = open_positions(positions)
-    symbols_had_open = set(open_items)
     stats["open_positions"] = len(open_items)
 
     for symbol, position in list(open_items.items()):
@@ -164,9 +182,9 @@ def process_trade_signals(
         if not symbol:
             stats["buy_missing_symbol"] += 1
             continue
-        if symbol in symbols_had_open or has_open_position(positions, symbol):
-            stats["buy_skipped_open_position"] += 1
-            continue
+        server_position = positions.get(symbol)
+        if server_position and server_position.get("status") == "OPEN":
+            stats["buy_existing_open_position"] += 1
         daily_rows = load_daily_rows(symbol)
         confirm_row = c_confirm_row(row, daily_rows)
         if confirm_row is None:
@@ -177,26 +195,27 @@ def process_trade_signals(
         reference_price = confirm_row.close
         row["_c_confirm_close"] = str(reference_price)
         c_point = first_c_point(row) or {}
-        positions[symbol] = {
-            "status": "OPEN",
-            "strategy": "bottom_c_confirm",
-            "symbol": symbol,
-            "signal_date": date_text,
-            "signal_time": c_confirm_time(row),
-            "reference_price": reference_price,
-            "c_time": str(c_point.get("time") or ""),
-            "c_price": float(c_point.get("price") or 0),
-            "c_confirm_price": reference_price,
-            "bm_price": float(row.get("BM_price") or 0),
-            "bm_break_price": float(row.get("BM_break_price") or 0),
-            "planned_entry_date": planned_entry_date,
-            "entry_date": "",
-            "entry_time": "",
-            "entry_price": None,
-            "ma_window": ma_window,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        messages["buy"].append(format_buy(row, metadata, planned_entry_date))
+        if not (server_position and server_position.get("status") == "OPEN"):
+            positions[symbol] = {
+                "status": "OPEN",
+                "strategy": "bottom_c_confirm",
+                "symbol": symbol,
+                "signal_date": date_text,
+                "signal_time": c_confirm_time(row),
+                "reference_price": reference_price,
+                "c_time": str(c_point.get("time") or ""),
+                "c_price": float(c_point.get("price") or 0),
+                "c_confirm_price": reference_price,
+                "bm_price": float(row.get("BM_price") or 0),
+                "bm_break_price": float(row.get("BM_break_price") or 0),
+                "planned_entry_date": planned_entry_date,
+                "entry_date": "",
+                "entry_time": "",
+                "entry_price": None,
+                "ma_window": ma_window,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        messages["buy"].append(format_buy(row, metadata, planned_entry_date, server_position))
         stats["buy_messages"] += 1
 
     return messages, positions, stats
