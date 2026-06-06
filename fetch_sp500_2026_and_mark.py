@@ -684,7 +684,6 @@ def repair_split_jumps(
     start: str,
     end: str | None,
     workers: int,
-    ratio: float,
     fetch_timeframes: Iterable[str] = TIMEFRAMES,
 ) -> list[dict[str, str]]:
     repair_rows: list[dict[str, str]] = []
@@ -692,7 +691,7 @@ def repair_split_jumps(
     selected_timeframes = set(fetch_timeframes)
     for symbol, item in sorted(metadata.items()):
         path = DATA_ROOT / "1day" / f"{symbol}_1day_indicators.csv"
-        events = price_jump_events(load_rows(path, min_date=start), ratio) if path.exists() else []
+        events = price_jump_events(load_rows(path, min_date=start), SPLIT_JUMP_RATIO) if path.exists() else []
         for event in events:
             repair_rows.append(
                 {
@@ -724,7 +723,7 @@ def repair_split_jumps(
         return []
 
     print(
-        f"split_jump_full_refreshes={len(affected)} threshold={ratio:g} "
+        f"split_jump_full_refreshes={len(affected)} "
         f"fetch_timeframes={','.join(sorted(selected_timeframes))}"
     )
     for symbol in affected:
@@ -1102,15 +1101,9 @@ def parse_args() -> argparse.Namespace:
         "--repair-split-jumps",
         action="store_true",
         help=(
-            "After fetching, check 1day local data for split-adjustment jumps and fully refresh affected symbols. "
-            "Useful for off-hours maintenance."
+            "After fetching, fully refresh all symbols for the selected timeframes. "
+            "Also records detected 1day split-adjustment jumps for diagnostics."
         ),
-    )
-    parser.add_argument(
-        "--split-jump-ratio",
-        type=float,
-        default=SPLIT_JUMP_RATIO,
-        help="Adjacent close jump threshold for --repair-split-jumps. Default: 8.",
     )
     parser.add_argument("--skip-fetch", action="store_true", help="Use existing local CSV files only.")
     parser.add_argument(
@@ -1192,7 +1185,6 @@ def main() -> int:
                 args.start,
                 args.end,
                 args.workers,
-                args.split_jump_ratio,
                 args.fetch_timeframes,
             )
 
